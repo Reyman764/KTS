@@ -1,0 +1,15 @@
+{
+  "output": {
+    "filePath": "repomix-output.xml",
+    "style": "xml"
+  },
+  "ignore": {
+    "customPatterns": [
+      "**/*.svg",
+      "**/*.png",
+      "**/*.jpg",
+      "**/*.ico",
+      "package-lock.json"
+    ]
+  }
+}
