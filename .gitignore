@@ -25,3 +25,20 @@ dist-ssr
 
 # Repomix AI context file
 repomix-output.xml
+
+# SQLite database (local user data — never commit real inventory data)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Electron build/packaging output
+dist-electron/
+release/
+*.exe
+*.dmg
+*.AppImage
+
+# Environment / secrets
+.env
+.env.local

@@ -16,5 +16,6 @@ contextBridge.exposeInMainWorld('api', {
   },
   reports: {
     query: (params) => ipcRenderer.invoke('reports:query', params),
+    queryAll: (params) => ipcRenderer.invoke('reports:queryAll', params),
   },
 });

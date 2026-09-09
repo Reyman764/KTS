@@ -247,7 +247,53 @@ function registerIpcHandlers() {
   // ---------------------------------------------------------------------------
   // Reports
   // ---------------------------------------------------------------------------
-  ipcMain.handle('reports:query', async (_event, { entityType, entityId, startDate, endDate }) => {
+
+  // Paginated: used by the on-screen report table so browsing stays fast
+  // no matter how many transactions match the filter.
+  ipcMain.handle('reports:query', async (_event, { entityType, entityId, startDate, endDate, page, pageSize }) => {
+    const conditions = ['entity_type = ?', 'entity_id = ?'];
+    const params = [entityType, entityId];
+
+    if (startDate) {
+      conditions.push('date >= ?');
+      params.push(startDate);
+    }
+    if (endDate) {
+      conditions.push('date <= ?');
+      params.push(endDate);
+    }
+
+    const where = `WHERE ${conditions.join(' AND ')}`;
+
+    const totalRow = await getAsync(
+      `SELECT COUNT(*) as count FROM transactions ${where}`,
+      params
+    );
+
+    const limit = pageSize || 200;
+    const offset = ((page || 1) - 1) * limit;
+
+    const rows = await allAsync(
+      `SELECT * FROM transactions ${where} ORDER BY date ASC, id ASC LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    const totals = await getAsync(
+      `SELECT
+        COALESCE(SUM(CASE WHEN entry_type != 'DRYING_LOSS' THEN receive ELSE 0 END), 0) as totalReceived,
+        COALESCE(SUM(CASE WHEN entry_type != 'DRYING_LOSS' THEN issue ELSE 0 END), 0) as totalIssued,
+        COALESCE(SUM(CASE WHEN entry_type = 'DRYING_LOSS' THEN issue ELSE 0 END), 0) as totalDryingLoss
+       FROM transactions ${where}`,
+      params
+    );
+
+    return { rows, totals, total: totalRow.count, page: page || 1, pageSize: limit };
+  });
+
+  // Unpaginated: used only by Export Excel / Export PDF, which genuinely
+  // need every matching row. Kept as a separate handler so normal browsing
+  // never accidentally triggers a full-table pull.
+  ipcMain.handle('reports:queryAll', async (_event, { entityType, entityId, startDate, endDate }) => {
     const conditions = ['entity_type = ?', 'entity_id = ?'];
     const params = [entityType, entityId];
 

@@ -65,6 +65,34 @@ export interface PaginatedTransactions {
   pageSize: number;
 }
 
+export interface ReportQueryParams {
+  entityType: EntityType;
+  entityId: number;
+  startDate?: string;
+  endDate?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface ReportTotals {
+  totalReceived: number;
+  totalIssued: number;
+  totalDryingLoss: number;
+}
+
+export interface ReportResult {
+  rows: Transaction[];
+  totals: ReportTotals;
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface ReportFullResult {
+  rows: Transaction[];
+  totals: ReportTotals;
+}
+
 declare global {
   interface Window {
     api: {
@@ -83,6 +111,10 @@ declare global {
       transactions: {
         getByEntity: (params: GetTransactionsParams) => Promise<PaginatedTransactions>;
         create: (data: CreateTransactionInput) => Promise<Transaction>;
+      };
+      reports: {
+        query: (params: ReportQueryParams) => Promise<ReportResult>;
+        queryAll: (params: Omit<ReportQueryParams, 'page' | 'pageSize'>) => Promise<ReportFullResult>;
       };
     };
   }

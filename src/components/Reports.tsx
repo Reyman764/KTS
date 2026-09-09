@@ -6,6 +6,8 @@ import { rawMaterialsApi } from '../api/rawMaterials';
 import { materialCodesApi } from '../api/materialCodes';
 import { reportsApi } from '../api/reports';
 
+const PAGE_SIZE = 200;
+
 export default function Reports() {
   const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>([]);
   const [codes, setCodes] = useState<MaterialCode[]>([]);
@@ -16,7 +18,9 @@ export default function Reports() {
   const [endDate, setEndDate] = useState('');
 
   const [result, setResult] = useState<ReportResult | null>(null);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState<'excel' | 'pdf' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const selectedRawMaterial = rawMaterials.find((rm) => rm.id === selectedRawMaterialId) ?? null;
@@ -40,25 +44,32 @@ export default function Reports() {
       .catch((err) => console.error('Failed to load codes', err));
   }, [selectedRawMaterialId]);
 
-  async function runReport() {
-    if (selectedRawMaterialId === '') {
+  function currentEntity(): { entityType: EntityType; entityId: number } | null {
+    if (selectedRawMaterialId === '') return null;
+    const entityType: EntityType = selectedCodeId !== '' ? 'COLOR_CODE' : 'RAW_MATERIAL';
+    const entityId = selectedCodeId !== '' ? selectedCodeId : selectedRawMaterialId;
+    return { entityType, entityId };
+  }
+
+  async function runReport(targetPage = 1) {
+    const entity = currentEntity();
+    if (!entity) {
       setError('Select a raw material first.');
       return;
     }
-
-    const entityType: EntityType = selectedCodeId !== '' ? 'COLOR_CODE' : 'RAW_MATERIAL';
-    const entityId = selectedCodeId !== '' ? selectedCodeId : selectedRawMaterialId;
 
     setLoading(true);
     setError(null);
     try {
       const data = await reportsApi.query({
-        entityType,
-        entityId,
+        ...entity,
         startDate: startDate || undefined,
         endDate: endDate || undefined,
+        page: targetPage,
+        pageSize: PAGE_SIZE,
       });
       setResult(data);
+      setPage(data.page);
     } catch (err) {
       console.error(err);
       const message = err instanceof Error ? err.message : String(err);
@@ -75,88 +86,99 @@ export default function Reports() {
     return 'Report';
   }
 
-  function exportExcel() {
-    if (!result) return;
+  async function exportExcel() {
+    const entity = currentEntity();
+    if (!entity || !result) return;
 
-    const headerRows = [
-      ['KTS Wool Inventory — Ledger Report'],
-      [reportLabel()],
-      [
-        startDate || endDate
-          ? `Period: ${startDate || 'earliest'} to ${endDate || 'latest'}`
-          : 'Period: all time',
-      ],
-      [],
-      ['Total Received', result.totals.totalReceived],
-      ['Total Issued', result.totals.totalIssued],
-      ['Total Drying Loss', result.totals.totalDryingLoss],
-      [],
-    ];
+    setExporting('excel');
+    setError(null);
+    try {
+      const full = await reportsApi.queryAll({
+        ...entity,
+        startDate: startDate || undefined,
+        endDate: endDate || undefined,
+      });
 
-    const tableHeader = [
-      'Date',
-      'Entry Type',
-      'Description',
-      'Buyer',
-      'Lot No',
-      'Rack No',
-      'Receiver',
-      'Issue (-)',
-      'Receive (+)',
-      'Balance',
-      'Remark',
-    ];
+      const headerRows = [
+        ['KTS Wool Inventory — Ledger Report'],
+        [reportLabel()],
+        [
+          startDate || endDate
+            ? `Period: ${startDate || 'earliest'} to ${endDate || 'latest'}`
+            : 'Period: all time',
+        ],
+        [],
+        ['Total Received', full.totals.totalReceived],
+        ['Total Issued', full.totals.totalIssued],
+        ['Total Drying Loss', full.totals.totalDryingLoss],
+        [],
+      ];
 
-    const tableRows = result.rows.map((t) => [
-      t.date,
-      t.entry_type,
-      t.description ?? '',
-      t.buyer ?? '',
-      t.lot_no ?? '',
-      t.rack_no ?? '',
-      t.receiver ?? '',
-      t.issue,
-      t.receive,
-      t.balance,
-      t.remark ?? '',
-    ]);
+      const tableHeader = [
+        'Date', 'Entry Type', 'Description', 'Buyer', 'Lot No', 'Rack No',
+        'Receiver', 'Issue (-)', 'Receive (+)', 'Balance', 'Remark',
+      ];
 
-    const sheetData = [...headerRows, tableHeader, ...tableRows];
-    const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
-    worksheet['!cols'] = [
-      { wch: 12 },
-      { wch: 16 },
-      { wch: 24 },
-      { wch: 16 },
-      { wch: 10 },
-      { wch: 10 },
-      { wch: 16 },
-      { wch: 10 },
-      { wch: 10 },
-      { wch: 12 },
-      { wch: 24 },
-    ];
+      const tableRows = full.rows.map((t) => [
+        t.date, t.entry_type, t.description ?? '', t.buyer ?? '', t.lot_no ?? '',
+        t.rack_no ?? '', t.receiver ?? '', t.issue, t.receive, t.balance, t.remark ?? '',
+      ]);
 
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Report');
+      const sheetData = [...headerRows, tableHeader, ...tableRows];
+      const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
+      worksheet['!cols'] = [
+        { wch: 12 }, { wch: 16 }, { wch: 24 }, { wch: 16 }, { wch: 10 },
+        { wch: 10 }, { wch: 16 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 24 },
+      ];
 
-    const filename = `${reportLabel().replace(/[^a-z0-9]+/gi, '_')}_report.xlsx`;
-    XLSX.writeFile(workbook, filename);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Report');
+
+      const filename = `${reportLabel().replace(/[^a-z0-9]+/gi, '_')}_report.xlsx`;
+      XLSX.writeFile(workbook, filename);
+    } catch (err) {
+      console.error(err);
+      const message = err instanceof Error ? err.message : String(err);
+      setError(`Could not export Excel: ${message}`);
+    } finally {
+      setExporting(null);
+    }
   }
 
-  function exportPdf() {
-    if (!result) return;
+  async function exportPdf() {
+    const entity = currentEntity();
+    if (!entity || !result) return;
 
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return;
+    setExporting('pdf');
+    setError(null);
+    try {
+      const full = await reportsApi.queryAll({
+        ...entity,
+        startDate: startDate || undefined,
+        endDate: endDate || undefined,
+      });
 
-    const html = buildPrintableHtml(reportLabel(), startDate, endDate, result);
-    printWindow.document.write(html);
-    printWindow.document.close();
-    printWindow.focus();
-    // Give the new window a moment to lay out before invoking print.
-    setTimeout(() => printWindow.print(), 250);
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) {
+        setError('Could not open the print window. Check if popups are blocked.');
+        return;
+      }
+
+      const html = buildPrintableHtml(reportLabel(), startDate, endDate, full);
+      printWindow.document.write(html);
+      printWindow.document.close();
+      printWindow.focus();
+      setTimeout(() => printWindow.print(), 250);
+    } catch (err) {
+      console.error(err);
+      const message = err instanceof Error ? err.message : String(err);
+      setError(`Could not export PDF: ${message}`);
+    } finally {
+      setExporting(null);
+    }
   }
+
+  const totalPages = result ? Math.max(1, Math.ceil(result.total / result.pageSize)) : 1;
 
   return (
     <div className="reports-page">
@@ -202,7 +224,7 @@ export default function Reports() {
           <input id="report-end" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
         </div>
 
-        <button type="button" className="btn-primary" onClick={runReport} disabled={loading}>
+        <button type="button" className="btn-primary" onClick={() => runReport(1)} disabled={loading}>
           {loading ? 'Running…' : 'Run Report'}
         </button>
       </div>
@@ -226,14 +248,19 @@ export default function Reports() {
             </div>
 
             <div className="reports-export-actions">
-              <button type="button" className="btn-secondary" onClick={exportExcel}>
-                <FileSpreadsheet size={14} /> Export Excel
+              <button type="button" className="btn-secondary" onClick={exportExcel} disabled={exporting !== null}>
+                <FileSpreadsheet size={14} /> {exporting === 'excel' ? 'Exporting…' : 'Export Excel'}
               </button>
-              <button type="button" className="btn-secondary" onClick={exportPdf}>
-                <FileText size={14} /> Export PDF
+              <button type="button" className="btn-secondary" onClick={exportPdf} disabled={exporting !== null}>
+                <FileText size={14} /> {exporting === 'pdf' ? 'Exporting…' : 'Export PDF'}
               </button>
             </div>
           </div>
+
+          <p className="reports-row-count">
+            Showing {result.rows.length === 0 ? 0 : (page - 1) * result.pageSize + 1}
+            –{(page - 1) * result.pageSize + result.rows.length} of {result.total} matching transactions
+          </p>
 
           <div className="ledger-table-wrap">
             <table className="ledger-table">
@@ -252,12 +279,17 @@ export default function Reports() {
                 </tr>
               </thead>
               <tbody>
-                {result.rows.length === 0 && (
+                {loading && (
+                  <tr>
+                    <td colSpan={10} className="ledger-empty-row">Loading…</td>
+                  </tr>
+                )}
+                {!loading && result.rows.length === 0 && (
                   <tr>
                     <td colSpan={10} className="ledger-empty-row">No transactions in this range.</td>
                   </tr>
                 )}
-                {result.rows.map((row) => (
+                {!loading && result.rows.map((row: Transaction) => (
                   <tr key={row.id}>
                     <td>{row.date}</td>
                     <td>{row.description}</td>
@@ -274,6 +306,18 @@ export default function Reports() {
               </tbody>
             </table>
           </div>
+
+          <div className="ledger-pagination">
+            <button type="button" disabled={page <= 1 || loading} onClick={() => runReport(page - 1)}>
+              Previous
+            </button>
+            <span>
+              Page {page} of {totalPages}
+            </span>
+            <button type="button" disabled={page >= totalPages || loading} onClick={() => runReport(page + 1)}>
+              Next
+            </button>
+          </div>
         </>
       )}
     </div>
@@ -284,7 +328,7 @@ function buildPrintableHtml(
   title: string,
   startDate: string,
   endDate: string,
-  result: ReportResult
+  result: { rows: Transaction[]; totals: { totalReceived: number; totalIssued: number; totalDryingLoss: number } }
 ): string {
   const period = startDate || endDate
     ? `Period: ${startDate || 'earliest'} to ${endDate || 'latest'}`
