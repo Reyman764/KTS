@@ -243,6 +243,41 @@ function registerIpcHandlers() {
 
     return getAsync('SELECT * FROM transactions WHERE id = ?', [result.id]);
   });
+
+  // ---------------------------------------------------------------------------
+  // Reports
+  // ---------------------------------------------------------------------------
+  ipcMain.handle('reports:query', async (_event, { entityType, entityId, startDate, endDate }) => {
+    const conditions = ['entity_type = ?', 'entity_id = ?'];
+    const params = [entityType, entityId];
+
+    if (startDate) {
+      conditions.push('date >= ?');
+      params.push(startDate);
+    }
+    if (endDate) {
+      conditions.push('date <= ?');
+      params.push(endDate);
+    }
+
+    const where = `WHERE ${conditions.join(' AND ')}`;
+
+    const rows = await allAsync(
+      `SELECT * FROM transactions ${where} ORDER BY date ASC, id ASC`,
+      params
+    );
+
+    const totals = await getAsync(
+      `SELECT
+        COALESCE(SUM(CASE WHEN entry_type != 'DRYING_LOSS' THEN receive ELSE 0 END), 0) as totalReceived,
+        COALESCE(SUM(CASE WHEN entry_type != 'DRYING_LOSS' THEN issue ELSE 0 END), 0) as totalIssued,
+        COALESCE(SUM(CASE WHEN entry_type = 'DRYING_LOSS' THEN issue ELSE 0 END), 0) as totalDryingLoss
+       FROM transactions ${where}`,
+      params
+    );
+
+    return { rows, totals };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -259,8 +294,13 @@ function createWindow() {
     },
   });
 
+  // Allow window.open() calls from the renderer (used by the Reports page's
+  // "Export PDF" button to open a printable view) to actually open a window,
+  // instead of being silently blocked by Electron's default same-window policy.
+  win.webContents.setWindowOpenHandler(() => ({ action: 'allow' }));
+
   if (process.env.NODE_ENV === 'development' || !app.isPackaged) {
-    win.loadURL('http://localhost:5174');
+    win.loadURL('http://localhost:5173');
   } else {
     win.loadFile(path.join(__dirname, '../dist/index.html'));
   }

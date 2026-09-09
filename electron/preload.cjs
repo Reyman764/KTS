@@ -14,4 +14,7 @@ contextBridge.exposeInMainWorld('api', {
     getByEntity: (params) => ipcRenderer.invoke('transactions:getByEntity', params),
     create: (data) => ipcRenderer.invoke('transactions:create', data),
   },
+  reports: {
+    query: (params) => ipcRenderer.invoke('reports:query', params),
+  },
 });

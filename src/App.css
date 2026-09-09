@@ -474,3 +474,137 @@
 .form-grid .span-2 {
   grid-column: 1 / -1;
 }
+
+/* ---------------------------------------------------------------------- */
+/* Nav rail (Phase 5)                                                     */
+/* ---------------------------------------------------------------------- */
+
+.app-nav-rail {
+  width: 76px;
+  flex-shrink: 0;
+  background: #f0f2f5;
+  border-right: 1px solid #e3e5e8;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 16px 8px;
+  gap: 6px;
+}
+
+.nav-rail-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 4px;
+  border: none;
+  background: none;
+  border-radius: 8px;
+  color: #6b7280;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.nav-rail-item:hover {
+  background: #e4e7eb;
+}
+
+.nav-rail-item.active {
+  background: #dbe6fb;
+  color: #16406c;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Reports (Phase 5)                                                      */
+/* ---------------------------------------------------------------------- */
+
+.reports-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+}
+
+.reports-page h2 {
+  margin: 0;
+  color: #1f2328;
+}
+
+.reports-filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+  background: #f6f7f9;
+  border: 1px solid #e3e5e8;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.reports-filters select,
+.reports-filters input[type='date'] {
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid #dfe2e6;
+  background: #ffffff;
+  color: #1f2328;
+  font-size: 13px;
+  min-width: 160px;
+}
+
+.reports-summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: #f6f7f9;
+  border: 1px solid #e3e5e8;
+  border-radius: 8px;
+  padding: 10px 16px;
+  min-width: 140px;
+}
+
+.summary-label {
+  font-size: 11px;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.summary-value {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.summary-value.receive { color: #1e7e34; }
+.summary-value.issue { color: #b02a37; }
+.summary-value.loss { color: #8a6a00; }
+
+.reports-export-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Full-viewport reset (fixes black margin + unwanted horizontal scroll)  */
+/* ---------------------------------------------------------------------- */
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+* {
+  box-sizing: border-box;
+}
