@@ -2,6 +2,7 @@ import { useState } from 'react';
 import Sidebar from './components/Sidebar';
 import CodeSubNav from './components/CodeSubNav';
 import LedgerTabs, { type LedgerView } from './components/LedgerTabs';
+import Ledger from './components/Ledger';
 import type { MaterialCode, RawMaterial } from './types';
 import './App.css';
 
@@ -45,14 +46,20 @@ function App() {
 
         <div className="ledger-content">
           {activeView === 'RAW_MATERIAL' && selectedRawMaterial && (
-            <p className="ledger-placeholder">
-              Ledger table for {selectedRawMaterial.name} goes here (Phase 4).
-            </p>
+            <Ledger
+              entityType="RAW_MATERIAL"
+              entityId={selectedRawMaterial.id}
+              entityLabel={selectedRawMaterial.name}
+              unit={selectedRawMaterial.unit}
+            />
           )}
           {activeView === 'COLOR_CODE' && selectedCode && (
-            <p className="ledger-placeholder">
-              Ledger table for code {selectedCode.code} goes here (Phase 4).
-            </p>
+            <Ledger
+              entityType="COLOR_CODE"
+              entityId={selectedCode.id}
+              entityLabel={selectedCode.code}
+              unit={selectedRawMaterial?.unit ?? 'kg'}
+            />
           )}
           {!selectedRawMaterial && (
             <p className="ledger-placeholder">

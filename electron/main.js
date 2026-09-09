@@ -127,12 +127,63 @@ function registerIpcHandlers() {
     return getAsync('SELECT * FROM material_codes WHERE id = ?', [result.id]);
   });
 
+  // ---------------------------------------------------------------------------
   // Transactions
-  ipcMain.handle('transactions:getByEntity', async (_event, { entityType, entityId }) => {
-    return allAsync(
-      'SELECT * FROM transactions WHERE entity_type = ? AND entity_id = ? ORDER BY date ASC, id ASC',
-      [entityType, entityId]
+  // ---------------------------------------------------------------------------
+
+  // Recompute running balances for one entity in chronological order.
+  // Called whenever an insert lands out of date order.
+  function recalcBalances(entityType, entityId) {
+    return new Promise((resolve, reject) => {
+      db.all(
+        'SELECT id, issue, receive FROM transactions WHERE entity_type = ? AND entity_id = ? ORDER BY date ASC, id ASC',
+        [entityType, entityId],
+        (err, rows) => {
+          if (err) return reject(err);
+          let running = 0;
+          const stmt = db.prepare('UPDATE transactions SET balance = ? WHERE id = ?');
+          for (const row of rows) {
+            running += (row.receive || 0) - (row.issue || 0);
+            stmt.run(running, row.id);
+          }
+          stmt.finalize((finalizeErr) => {
+            if (finalizeErr) reject(finalizeErr);
+            else resolve();
+          });
+        }
+      );
+    });
+  }
+
+  ipcMain.handle('transactions:getByEntity', async (_event, { entityType, entityId, startDate, endDate, page, pageSize }) => {
+    const conditions = ['entity_type = ?', 'entity_id = ?'];
+    const params = [entityType, entityId];
+
+    if (startDate) {
+      conditions.push('date >= ?');
+      params.push(startDate);
+    }
+    if (endDate) {
+      conditions.push('date <= ?');
+      params.push(endDate);
+    }
+
+    const where = `WHERE ${conditions.join(' AND ')}`;
+
+    const totalRow = await getAsync(
+      `SELECT COUNT(*) as count FROM transactions ${where}`,
+      params
     );
+
+    const limit = pageSize || 100;
+    const offset = ((page || 1) - 1) * limit;
+
+    const rows = await allAsync(
+      `SELECT * FROM transactions ${where} ORDER BY date ASC, id ASC LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    return { rows, total: totalRow.count, page: page || 1, pageSize: limit };
   });
 
   ipcMain.handle('transactions:create', async (_event, payload) => {
@@ -151,14 +202,17 @@ function registerIpcHandlers() {
       remark,
     } = payload;
 
-    const lastTxn = await getAsync(
-      'SELECT balance FROM transactions WHERE entity_type = ? AND entity_id = ? ORDER BY date DESC, id DESC LIMIT 1',
-      [entityType, entityId]
-    );
-    const lastBalance = lastTxn ? lastTxn.balance : 0;
     const issueVal = Number(issue) || 0;
     const receiveVal = Number(receive) || 0;
-    const balance = lastBalance + receiveVal - issueVal;
+
+    // Is this entry chronologically after everything currently stored?
+    const latest = await getAsync(
+      'SELECT date, balance FROM transactions WHERE entity_type = ? AND entity_id = ? ORDER BY date DESC, id DESC LIMIT 1',
+      [entityType, entityId]
+    );
+
+    const isAppend = !latest || date >= latest.date;
+    const provisionalBalance = (latest ? latest.balance : 0) + receiveVal - issueVal;
 
     const result = await runAsync(
       `INSERT INTO transactions
@@ -176,10 +230,16 @@ function registerIpcHandlers() {
         receiver || null,
         issueVal,
         receiveVal,
-        balance,
+        provisionalBalance,
         remark || null,
       ]
     );
+
+    // Backdated entry inserted into the middle of the ledger: every balance
+    // after it (and its own) needs recomputing, since balance is cumulative.
+    if (!isAppend) {
+      await recalcBalances(entityType, entityId);
+    }
 
     return getAsync('SELECT * FROM transactions WHERE id = ?', [result.id]);
   });

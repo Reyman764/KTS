@@ -49,6 +49,22 @@ export interface CreateTransactionInput {
   remark?: string;
 }
 
+export interface GetTransactionsParams {
+  entityType: EntityType;
+  entityId: number;
+  startDate?: string;
+  endDate?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface PaginatedTransactions {
+  rows: Transaction[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 declare global {
   interface Window {
     api: {
@@ -65,10 +81,7 @@ declare global {
         }) => Promise<MaterialCode>;
       };
       transactions: {
-        getByEntity: (params: {
-          entityType: EntityType;
-          entityId: number;
-        }) => Promise<Transaction[]>;
+        getByEntity: (params: GetTransactionsParams) => Promise<PaginatedTransactions>;
         create: (data: CreateTransactionInput) => Promise<Transaction>;
       };
     };
