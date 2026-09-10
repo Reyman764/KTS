@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Plus, Tag } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Plus, Tag, Search, X, ChevronDown } from 'lucide-react';
 import type { MaterialCode, RawMaterial } from '../types';
 import { materialCodesApi } from '../api/materialCodes';
 
@@ -9,6 +9,9 @@ interface CodeSubNavProps {
   onSelectCode: (code: MaterialCode | null) => void;
 }
 
+const codeCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+const COLLAPSE_THRESHOLD = 12;
+
 export default function CodeSubNav({
   rawMaterial,
   selectedCodeId,
@@ -17,8 +20,11 @@ export default function CodeSubNav({
   const [codes, setCodes] = useState<MaterialCode[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const [filter, setFilter] = useState('');
+  const [expanded, setExpanded] = useState(true);
 
   useEffect(() => {
+    setFilter('');
     if (rawMaterial) {
       loadCodes(rawMaterial.id);
     } else {
@@ -30,7 +36,11 @@ export default function CodeSubNav({
     setLoading(true);
     try {
       const data = await materialCodesApi.getByRawMaterial(rawMaterialId);
-      setCodes(data);
+      const sorted = [...data].sort((a, b) => codeCollator.compare(a.code, b.code));
+      setCodes(sorted);
+      // Start collapsed for long lists once a code is already selected —
+      // otherwise leave it open so the user can see what's available.
+      setExpanded(!(sorted.length > COLLAPSE_THRESHOLD && selectedCodeId));
     } catch (err) {
       console.error('Failed to load material codes', err);
     } finally {
@@ -39,10 +49,30 @@ export default function CodeSubNav({
   }
 
   function handleCreated(newCode: MaterialCode) {
-    setCodes((prev) => [...prev, newCode].sort((a, b) => a.code.localeCompare(b.code)));
+    setCodes((prev) =>
+      [...prev, newCode].sort((a, b) => codeCollator.compare(a.code, b.code))
+    );
     onSelectCode(newCode);
     setModalOpen(false);
   }
+
+  function handleSelect(code: MaterialCode) {
+    onSelectCode(code);
+    if (codes.length > COLLAPSE_THRESHOLD) {
+      setExpanded(false);
+    }
+  }
+
+  const filteredCodes = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return codes;
+    return codes.filter((c) => c.code.toLowerCase().includes(q));
+  }, [codes, filter]);
+
+  const selectedCode = useMemo(
+    () => codes.find((c) => c.id === selectedCodeId) ?? null,
+    [codes, selectedCodeId]
+  );
 
   if (!rawMaterial) {
     return (
@@ -52,37 +82,102 @@ export default function CodeSubNav({
     );
   }
 
+  const showSearch = codes.length > COLLAPSE_THRESHOLD;
+  const collapsible = codes.length > COLLAPSE_THRESHOLD;
+
   return (
     <div className="subnav">
-      <div className="subnav-header">
-        <span className="subnav-title">Codes under {rawMaterial.name}</span>
-        <button
-          type="button"
-          className="icon-btn"
-          onClick={() => setModalOpen(true)}
-          aria-label="Add code"
-        >
-          <Plus size={14} />
-        </button>
-      </div>
-
-      <div className="subnav-list">
-        {loading && <span className="subnav-empty-text">Loading…</span>}
-        {!loading && codes.length === 0 && (
-          <span className="subnav-empty-text">No codes yet.</span>
-        )}
-        {codes.map((code) => (
-          <button
-            key={code.id}
-            type="button"
-            className={`subnav-item ${selectedCodeId === code.id ? 'active' : ''}`}
-            onClick={() => onSelectCode(code)}
+      <button
+        type="button"
+        className="subnav-header subnav-header-toggle"
+        onClick={() => collapsible && setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        disabled={!collapsible}
+      >
+        <span className="subnav-title">
+          Codes under {rawMaterial.name}
+          {!expanded && selectedCode && (
+            <span className="subnav-title-selected"> — {selectedCode.code}</span>
+          )}
+        </span>
+        <div className="subnav-header-actions">
+          {codes.length > 0 && (
+            <span className="subnav-count">{codes.length}</span>
+          )}
+          {collapsible && (
+            <ChevronDown
+              size={15}
+              className={`subnav-chevron ${expanded ? 'expanded' : ''}`}
+            />
+          )}
+          <span
+            role="button"
+            tabIndex={0}
+            className="icon-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              setModalOpen(true);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.stopPropagation();
+                setModalOpen(true);
+              }
+            }}
+            aria-label="Add code"
           >
-            <Tag size={13} />
-            <span>{code.code}</span>
-          </button>
-        ))}
-      </div>
+            <Plus size={14} />
+          </span>
+        </div>
+      </button>
+
+      {expanded && (
+        <>
+          {showSearch && (
+            <div className="subnav-search">
+              <Search size={13} className="subnav-search-icon" />
+              <input
+                type="text"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder={`Filter ${codes.length} codes…`}
+                aria-label="Filter color codes"
+              />
+              {filter && (
+                <button
+                  type="button"
+                  className="subnav-search-clear"
+                  onClick={() => setFilter('')}
+                  aria-label="Clear filter"
+                >
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="subnav-list">
+            {loading && <span className="subnav-empty-text">Loading…</span>}
+            {!loading && codes.length === 0 && (
+              <span className="subnav-empty-text">No codes yet.</span>
+            )}
+            {!loading && codes.length > 0 && filteredCodes.length === 0 && (
+              <span className="subnav-empty-text">No codes match "{filter}".</span>
+            )}
+            {filteredCodes.map((code) => (
+              <button
+                key={code.id}
+                type="button"
+                className={`subnav-item ${selectedCodeId === code.id ? 'active' : ''}`}
+                onClick={() => handleSelect(code)}
+              >
+                <Tag size={13} />
+                <span>{code.code}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
 
       {modalOpen && (
         <AddCodeModal

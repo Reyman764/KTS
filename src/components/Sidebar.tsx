@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, Package } from 'lucide-react';
+import { Plus, Package, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import type { RawMaterial } from '../types';
 import { rawMaterialsApi } from '../api/rawMaterials';
 
@@ -17,6 +17,7 @@ export default function Sidebar({
   const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
 
   useEffect(() => {
     loadRawMaterials();
@@ -43,44 +44,73 @@ export default function Sidebar({
   }
 
   return (
-    <aside className="sidebar">
-      <div className="sidebar-header">
-        <h2>Raw materials</h2>
+    <>
+      <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
+        {!collapsed && (
+          <>
+            <div className="sidebar-header">
+              <h2>Raw materials</h2>
+              <div className="sidebar-header-actions">
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => setModalOpen(true)}
+                  aria-label="Add raw material"
+                >
+                  <Plus size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn sidebar-collapse-btn"
+                  onClick={() => setCollapsed(true)}
+                  aria-label="Collapse sidebar"
+                  title="Collapse sidebar"
+                >
+                  <ChevronsLeft size={16} />
+                </button>
+              </div>
+            </div>
+
+            <div className="sidebar-list">
+              {loading && <p className="sidebar-empty">Loading…</p>}
+              {!loading && rawMaterials.length === 0 && (
+                <p className="sidebar-empty">No raw materials yet.</p>
+              )}
+              {rawMaterials.map((rm) => (
+                <button
+                  key={rm.id}
+                  type="button"
+                  className={`sidebar-item ${selectedRawMaterialId === rm.id ? 'active' : ''}`}
+                  onClick={() => onSelectRawMaterial(rm)}
+                >
+                  <Package size={16} />
+                  <span>{rm.name}</span>
+                </button>
+              ))}
+            </div>
+
+            {modalOpen && (
+              <AddRawMaterialModal
+                onClose={() => setModalOpen(false)}
+                onCreated={handleCreated}
+              />
+            )}
+          </>
+        )}
+      </aside>
+
+      {collapsed && (
         <button
           type="button"
-          className="icon-btn"
-          onClick={() => setModalOpen(true)}
-          aria-label="Add raw material"
+          className="sidebar-pull-tab"
+          onClick={() => setCollapsed(false)}
+          aria-label="Show raw materials"
+          title="Show raw materials"
         >
-          <Plus size={16} />
+          <ChevronsRight size={15} />
         </button>
-      </div>
-
-      <div className="sidebar-list">
-        {loading && <p className="sidebar-empty">Loading…</p>}
-        {!loading && rawMaterials.length === 0 && (
-          <p className="sidebar-empty">No raw materials yet.</p>
-        )}
-        {rawMaterials.map((rm) => (
-          <button
-            key={rm.id}
-            type="button"
-            className={`sidebar-item ${selectedRawMaterialId === rm.id ? 'active' : ''}`}
-            onClick={() => onSelectRawMaterial(rm)}
-          >
-            <Package size={16} />
-            <span>{rm.name}</span>
-          </button>
-        ))}
-      </div>
-
-      {modalOpen && (
-        <AddRawMaterialModal
-          onClose={() => setModalOpen(false)}
-          onCreated={handleCreated}
-        />
       )}
-    </aside>
+    </>
   );
 }
 

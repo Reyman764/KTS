@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Plus } from 'lucide-react';
+import { Plus, Pencil, Trash2 } from 'lucide-react';
 import type { EntityType, EntryType, Transaction } from '../types';
 import { transactionsApi } from '../api/transactions';
 
@@ -11,6 +11,7 @@ interface LedgerProps {
 }
 
 const PAGE_SIZE = 100;
+const COLUMN_COUNT = 14;
 
 export default function Ledger({ entityType, entityId, entityLabel, unit }: LedgerProps) {
   const [rows, setRows] = useState<Transaction[]>([]);
@@ -18,6 +19,8 @@ export default function Ledger({ entityType, entityId, entityLabel, unit }: Ledg
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingRow, setEditingRow] = useState<Transaction | null>(null);
+  const [deletingRow, setDeletingRow] = useState<Transaction | null>(null);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
 
@@ -52,6 +55,22 @@ export default function Ledger({ entityType, entityId, entityLabel, unit }: Ledg
   function handleCreated() {
     setModalOpen(false);
     load(1); // new entry is always latest-visible on the first page after refresh
+  }
+
+  function handleUpdated() {
+    setEditingRow(null);
+    load(page); // edited row may have moved pages if its date changed, but staying put is the common case
+  }
+
+  async function handleConfirmDelete() {
+    if (!deletingRow) return;
+    try {
+      await transactionsApi.delete(deletingRow.id);
+      setDeletingRow(null);
+      load(page);
+    } catch (err) {
+      console.error('Failed to delete transaction', err);
+    }
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -94,24 +113,28 @@ export default function Ledger({ entityType, entityId, entityLabel, unit }: Ledg
               <th>Date</th>
               <th>Description</th>
               <th>Buyer</th>
+              <th>Order No.</th>
               <th>Lot No</th>
               <th>Rack No</th>
-              <th>Receiver</th>
-              <th className="num">Issue (-)</th>
-              <th className="num">Receive (+)</th>
+              <th className="num th-wrap">Receive from{'\n'}dye</th>
+              <th className="num th-wrap">Knitting{'\n'}distribution</th>
+              <th className="num th-wrap">Return{'\n'}Qty</th>
               <th className="num">Balance</th>
+              <th className="num">Assorted</th>
+              <th className="num">Wastage</th>
               <th>Remark</th>
+              <th className="ledger-actions-col"></th>
             </tr>
           </thead>
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={10} className="ledger-empty-row">Loading…</td>
+                <td colSpan={COLUMN_COUNT} className="ledger-empty-row">Loading…</td>
               </tr>
             )}
             {!loading && rows.length === 0 && (
               <tr>
-                <td colSpan={10} className="ledger-empty-row">No transactions yet.</td>
+                <td colSpan={COLUMN_COUNT} className="ledger-empty-row">No transactions yet.</td>
               </tr>
             )}
             {!loading &&
@@ -127,13 +150,38 @@ export default function Ledger({ entityType, entityId, entityLabel, unit }: Ledg
                     )}
                   </td>
                   <td>{row.buyer}</td>
+                  <td>{row.order_no}</td>
                   <td>{row.lot_no}</td>
                   <td>{row.rack_no}</td>
-                  <td>{row.receiver}</td>
-                  <td className="num">{row.issue ? row.issue.toFixed(2) : ''}</td>
-                  <td className="num">{row.receive ? row.receive.toFixed(2) : ''}</td>
+                  <td className="num">{row.receive_from_dye ? row.receive_from_dye.toFixed(2) : ''}</td>
+                  <td className="num">{row.knitting_distribution ? row.knitting_distribution.toFixed(2) : ''}</td>
+                  <td className="num">{row.return_qty ? row.return_qty.toFixed(2) : ''}</td>
                   <td className="num balance-cell">{row.balance.toFixed(2)} {unit}</td>
+                  <td className="num">{row.assorted ? row.assorted.toFixed(2) : ''}</td>
+                  <td className="num">{row.wastage ? row.wastage.toFixed(2) : ''}</td>
                   <td>{row.remark}</td>
+                  <td className="ledger-actions-col">
+                    <div className="row-actions">
+                      <button
+                        type="button"
+                        className="row-action-btn"
+                        onClick={() => setEditingRow(row)}
+                        aria-label="Edit entry"
+                        title="Edit entry"
+                      >
+                        <Pencil size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        className="row-action-btn row-action-danger"
+                        onClick={() => setDeletingRow(row)}
+                        aria-label="Delete entry"
+                        title="Delete entry"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
           </tbody>
@@ -160,9 +208,232 @@ export default function Ledger({ entityType, entityId, entityLabel, unit }: Ledg
           onCreated={handleCreated}
         />
       )}
+
+      {editingRow && (
+        <EditEntryModal
+          transaction={editingRow}
+          onClose={() => setEditingRow(null)}
+          onUpdated={handleUpdated}
+        />
+      )}
+
+      {deletingRow && (
+        <DeleteConfirmModal
+          transaction={deletingRow}
+          onClose={() => setDeletingRow(null)}
+          onConfirm={handleConfirmDelete}
+        />
+      )}
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Shared entry form fields — used by both Add and Edit modals so the two
+// forms can't drift apart.
+// ---------------------------------------------------------------------------
+
+interface EntryFormValues {
+  date: string;
+  entryType: EntryType;
+  description: string;
+  buyer: string;
+  orderNo: string;
+  lotNo: string;
+  rackNo: string;
+  receiveFromDye: string;
+  knittingDistribution: string;
+  returnQty: string;
+  assorted: string;
+  wastage: string;
+  remark: string;
+}
+
+interface EntryFormFieldsProps {
+  values: EntryFormValues;
+  onChange: <K extends keyof EntryFormValues>(field: K, value: EntryFormValues[K]) => void;
+  idPrefix: string;
+}
+
+function EntryFormFields({ values, onChange, idPrefix }: EntryFormFieldsProps) {
+  return (
+    <div className="form-grid">
+      <div>
+        <label className="field-label" htmlFor={`${idPrefix}-date`}>Date</label>
+        <input
+          id={`${idPrefix}-date`}
+          type="date"
+          value={values.date}
+          onChange={(e) => onChange('date', e.target.value)}
+        />
+      </div>
+
+      <div>
+        <label className="field-label" htmlFor={`${idPrefix}-type`}>Entry Type</label>
+        <select
+          id={`${idPrefix}-type`}
+          value={values.entryType}
+          onChange={(e) => onChange('entryType', e.target.value as EntryType)}
+        >
+          <option value="NORMAL">Normal Transaction</option>
+          <option value="DRYING_LOSS">Drying / Weight Loss</option>
+          <option value="AUDIT_ADJUSTMENT">Audit Adjustment</option>
+        </select>
+      </div>
+
+      <div className="span-2">
+        <label className="field-label" htmlFor={`${idPrefix}-desc`}>Description</label>
+        <input
+          id={`${idPrefix}-desc`}
+          type="text"
+          value={values.description}
+          onChange={(e) => onChange('description', e.target.value)}
+        />
+      </div>
+
+      <div>
+        <label className="field-label" htmlFor={`${idPrefix}-buyer`}>Buyer</label>
+        <input
+          id={`${idPrefix}-buyer`}
+          type="text"
+          value={values.buyer}
+          onChange={(e) => onChange('buyer', e.target.value)}
+        />
+      </div>
+
+      <div>
+        <label className="field-label" htmlFor={`${idPrefix}-order`}>Order No.</label>
+        <input
+          id={`${idPrefix}-order`}
+          type="text"
+          value={values.orderNo}
+          onChange={(e) => onChange('orderNo', e.target.value)}
+          placeholder="e.g. JP-2026-014"
+        />
+      </div>
+
+      <div>
+        <label className="field-label" htmlFor={`${idPrefix}-lot`}>Lot No</label>
+        <input
+          id={`${idPrefix}-lot`}
+          type="text"
+          value={values.lotNo}
+          onChange={(e) => onChange('lotNo', e.target.value)}
+        />
+      </div>
+
+      <div>
+        <label className="field-label" htmlFor={`${idPrefix}-rack`}>Rack No</label>
+        <input
+          id={`${idPrefix}-rack`}
+          type="text"
+          value={values.rackNo}
+          onChange={(e) => onChange('rackNo', e.target.value)}
+        />
+      </div>
+
+      <div>
+        <label className="field-label" htmlFor={`${idPrefix}-receive-dye`}>Receive from dye (+)</label>
+        <input
+          id={`${idPrefix}-receive-dye`}
+          type="number"
+          step="0.01"
+          min="0"
+          value={values.receiveFromDye}
+          onChange={(e) => onChange('receiveFromDye', e.target.value)}
+        />
+      </div>
+
+      <div>
+        <label className="field-label" htmlFor={`${idPrefix}-knitting`}>Knitting distribution (-)</label>
+        <input
+          id={`${idPrefix}-knitting`}
+          type="number"
+          step="0.01"
+          min="0"
+          value={values.knittingDistribution}
+          onChange={(e) => onChange('knittingDistribution', e.target.value)}
+        />
+      </div>
+
+      <div>
+        <label className="field-label" htmlFor={`${idPrefix}-return`}>Return Qty (+)</label>
+        <input
+          id={`${idPrefix}-return`}
+          type="number"
+          step="0.01"
+          min="0"
+          value={values.returnQty}
+          onChange={(e) => onChange('returnQty', e.target.value)}
+        />
+      </div>
+
+      <div>
+        <label className="field-label" htmlFor={`${idPrefix}-assorted`}>
+          Assorted <span className="field-label-note">(no balance impact)</span>
+        </label>
+        <input
+          id={`${idPrefix}-assorted`}
+          type="number"
+          step="0.01"
+          min="0"
+          value={values.assorted}
+          onChange={(e) => onChange('assorted', e.target.value)}
+        />
+      </div>
+
+      <div>
+        <label className="field-label" htmlFor={`${idPrefix}-wastage`}>
+          Wastage <span className="field-label-note">(no balance impact)</span>
+        </label>
+        <input
+          id={`${idPrefix}-wastage`}
+          type="number"
+          step="0.01"
+          min="0"
+          value={values.wastage}
+          onChange={(e) => onChange('wastage', e.target.value)}
+        />
+      </div>
+
+      <div className="span-2">
+        <label className="field-label" htmlFor={`${idPrefix}-remark`}>Remark</label>
+        <input
+          id={`${idPrefix}-remark`}
+          type="text"
+          value={values.remark}
+          onChange={(e) => onChange('remark', e.target.value)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function validateAmounts(values: EntryFormValues): string | null {
+  const receiveFromDyeVal = Number(values.receiveFromDye) || 0;
+  const knittingDistributionVal = Number(values.knittingDistribution) || 0;
+  const returnQtyVal = Number(values.returnQty) || 0;
+  const assortedVal = Number(values.assorted) || 0;
+  const wastageVal = Number(values.wastage) || 0;
+
+  if (
+    receiveFromDyeVal === 0 &&
+    knittingDistributionVal === 0 &&
+    returnQtyVal === 0 &&
+    assortedVal === 0 &&
+    wastageVal === 0
+  ) {
+    return 'Enter at least one quantity (receive, distribution, return, assorted, or wastage).';
+  }
+  if ([receiveFromDyeVal, knittingDistributionVal, returnQtyVal, assortedVal, wastageVal].some((v) => v < 0)) {
+    return 'Quantities cannot be negative.';
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Add Entry
+// ---------------------------------------------------------------------------
 
 interface AddEntryModalProps {
   entityType: EntityType;
@@ -172,33 +443,38 @@ interface AddEntryModalProps {
 }
 
 function AddEntryModal({ entityType, entityId, onClose, onCreated }: AddEntryModalProps) {
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [entryType, setEntryType] = useState<EntryType>('NORMAL');
-  const [description, setDescription] = useState('');
-  const [buyer, setBuyer] = useState('');
-  const [lotNo, setLotNo] = useState('');
-  const [rackNo, setRackNo] = useState('');
-  const [receiver, setReceiver] = useState('');
-  const [issue, setIssue] = useState('');
-  const [receive, setReceive] = useState('');
-  const [remark, setRemark] = useState('');
+  const [values, setValues] = useState<EntryFormValues>({
+    date: new Date().toISOString().slice(0, 10),
+    entryType: 'NORMAL',
+    description: '',
+    buyer: '',
+    orderNo: '',
+    lotNo: '',
+    rackNo: '',
+    receiveFromDye: '',
+    knittingDistribution: '',
+    returnQty: '',
+    assorted: '',
+    wastage: '',
+    remark: '',
+  });
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  function handleChange<K extends keyof EntryFormValues>(field: K, value: EntryFormValues[K]) {
+    setValues((prev) => ({ ...prev, [field]: value }));
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!date) {
+    if (!values.date) {
       setError('Date is required.');
       return;
     }
-    const issueVal = Number(issue) || 0;
-    const receiveVal = Number(receive) || 0;
-    if (issueVal === 0 && receiveVal === 0) {
-      setError('Enter an Issue or Receive amount.');
-      return;
-    }
-    if (issueVal > 0 && receiveVal > 0) {
-      setError('Enter only one of Issue or Receive, not both.');
+
+    const amountsError = validateAmounts(values);
+    if (amountsError) {
+      setError(amountsError);
       return;
     }
 
@@ -208,16 +484,19 @@ function AddEntryModal({ entityType, entityId, onClose, onCreated }: AddEntryMod
       await transactionsApi.create({
         entityType,
         entityId,
-        entryType,
-        date,
-        description: description.trim() || undefined,
-        buyer: buyer.trim() || undefined,
-        lotNo: lotNo.trim() || undefined,
-        rackNo: rackNo.trim() || undefined,
-        receiver: receiver.trim() || undefined,
-        issue: issueVal,
-        receive: receiveVal,
-        remark: remark.trim() || undefined,
+        entryType: values.entryType,
+        date: values.date,
+        description: values.description.trim() || undefined,
+        buyer: values.buyer.trim() || undefined,
+        orderNo: values.orderNo.trim() || undefined,
+        lotNo: values.lotNo.trim() || undefined,
+        rackNo: values.rackNo.trim() || undefined,
+        receiveFromDye: Number(values.receiveFromDye) || 0,
+        knittingDistribution: Number(values.knittingDistribution) || 0,
+        returnQty: Number(values.returnQty) || 0,
+        assorted: Number(values.assorted) || 0,
+        wastage: Number(values.wastage) || 0,
+        remark: values.remark.trim() || undefined,
       });
       onCreated();
     } catch (err) {
@@ -233,77 +512,7 @@ function AddEntryModal({ entityType, entityId, onClose, onCreated }: AddEntryMod
       <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
         <h3>Add ledger entry</h3>
         <form onSubmit={handleSubmit}>
-          <div className="form-grid">
-            <div>
-              <label className="field-label" htmlFor="entry-date">Date</label>
-              <input id="entry-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-            </div>
-
-            <div>
-              <label className="field-label" htmlFor="entry-type">Entry Type</label>
-              <select id="entry-type" value={entryType} onChange={(e) => setEntryType(e.target.value as EntryType)}>
-                <option value="NORMAL">Normal Transaction</option>
-                <option value="DRYING_LOSS">Drying / Weight Loss</option>
-                <option value="AUDIT_ADJUSTMENT">Audit Adjustment</option>
-              </select>
-            </div>
-
-            <div className="span-2">
-              <label className="field-label" htmlFor="entry-desc">Description</label>
-              <input id="entry-desc" type="text" value={description} onChange={(e) => setDescription(e.target.value)} />
-            </div>
-
-            <div>
-              <label className="field-label" htmlFor="entry-buyer">Buyer</label>
-              <input id="entry-buyer" type="text" value={buyer} onChange={(e) => setBuyer(e.target.value)} />
-            </div>
-
-            <div>
-              <label className="field-label" htmlFor="entry-receiver">Receiver</label>
-              <input id="entry-receiver" type="text" value={receiver} onChange={(e) => setReceiver(e.target.value)} />
-            </div>
-
-            <div>
-              <label className="field-label" htmlFor="entry-lot">Lot No</label>
-              <input id="entry-lot" type="text" value={lotNo} onChange={(e) => setLotNo(e.target.value)} />
-            </div>
-
-            <div>
-              <label className="field-label" htmlFor="entry-rack">Rack No</label>
-              <input id="entry-rack" type="text" value={rackNo} onChange={(e) => setRackNo(e.target.value)} />
-            </div>
-
-            <div>
-              <label className="field-label" htmlFor="entry-issue">Issue (-)</label>
-              <input
-                id="entry-issue"
-                type="number"
-                step="0.01"
-                min="0"
-                value={issue}
-                onChange={(e) => setIssue(e.target.value)}
-                disabled={Number(receive) > 0}
-              />
-            </div>
-
-            <div>
-              <label className="field-label" htmlFor="entry-receive">Receive (+)</label>
-              <input
-                id="entry-receive"
-                type="number"
-                step="0.01"
-                min="0"
-                value={receive}
-                onChange={(e) => setReceive(e.target.value)}
-                disabled={Number(issue) > 0}
-              />
-            </div>
-
-            <div className="span-2">
-              <label className="field-label" htmlFor="entry-remark">Remark</label>
-              <input id="entry-remark" type="text" value={remark} onChange={(e) => setRemark(e.target.value)} />
-            </div>
-          </div>
+          <EntryFormFields values={values} onChange={handleChange} idPrefix="add-entry" />
 
           {error && <p className="field-error">{error}</p>}
 
@@ -316,6 +525,144 @@ function AddEntryModal({ entityType, entityId, onClose, onCreated }: AddEntryMod
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Edit Entry
+// ---------------------------------------------------------------------------
+
+interface EditEntryModalProps {
+  transaction: Transaction;
+  onClose: () => void;
+  onUpdated: () => void;
+}
+
+function EditEntryModal({ transaction, onClose, onUpdated }: EditEntryModalProps) {
+  const [values, setValues] = useState<EntryFormValues>({
+    date: transaction.date,
+    entryType: transaction.entry_type,
+    description: transaction.description ?? '',
+    buyer: transaction.buyer ?? '',
+    orderNo: transaction.order_no ?? '',
+    lotNo: transaction.lot_no ?? '',
+    rackNo: transaction.rack_no ?? '',
+    receiveFromDye: transaction.receive_from_dye ? String(transaction.receive_from_dye) : '',
+    knittingDistribution: transaction.knitting_distribution ? String(transaction.knitting_distribution) : '',
+    returnQty: transaction.return_qty ? String(transaction.return_qty) : '',
+    assorted: transaction.assorted ? String(transaction.assorted) : '',
+    wastage: transaction.wastage ? String(transaction.wastage) : '',
+    remark: transaction.remark ?? '',
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  function handleChange<K extends keyof EntryFormValues>(field: K, value: EntryFormValues[K]) {
+    setValues((prev) => ({ ...prev, [field]: value }));
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!values.date) {
+      setError('Date is required.');
+      return;
+    }
+
+    const amountsError = validateAmounts(values);
+    if (amountsError) {
+      setError(amountsError);
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    try {
+      await transactionsApi.update({
+        id: transaction.id,
+        entryType: values.entryType,
+        date: values.date,
+        description: values.description.trim() || undefined,
+        buyer: values.buyer.trim() || undefined,
+        orderNo: values.orderNo.trim() || undefined,
+        lotNo: values.lotNo.trim() || undefined,
+        rackNo: values.rackNo.trim() || undefined,
+        receiveFromDye: Number(values.receiveFromDye) || 0,
+        knittingDistribution: Number(values.knittingDistribution) || 0,
+        returnQty: Number(values.returnQty) || 0,
+        assorted: Number(values.assorted) || 0,
+        wastage: Number(values.wastage) || 0,
+        remark: values.remark.trim() || undefined,
+      });
+      onUpdated();
+    } catch (err) {
+      console.error(err);
+      setError('Could not save the changes.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
+        <h3>Edit ledger entry</h3>
+        <form onSubmit={handleSubmit}>
+          <EntryFormFields values={values} onChange={handleChange} idPrefix="edit-entry" />
+
+          {error && <p className="field-error">{error}</p>}
+
+          <div className="modal-actions">
+            <button type="button" className="btn-secondary" onClick={onClose}>
+              Cancel
+            </button>
+            <button type="submit" className="btn-primary" disabled={submitting}>
+              {submitting ? 'Saving…' : 'Save changes'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Delete confirmation
+// ---------------------------------------------------------------------------
+
+interface DeleteConfirmModalProps {
+  transaction: Transaction;
+  onClose: () => void;
+  onConfirm: () => void;
+}
+
+function DeleteConfirmModal({ transaction, onClose, onConfirm }: DeleteConfirmModalProps) {
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleConfirm() {
+    setSubmitting(true);
+    await onConfirm();
+    setSubmitting(false);
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>Delete entry?</h3>
+        <p className="delete-confirm-text">
+          This will permanently remove the {transaction.date} entry
+          {transaction.description ? ` ("${transaction.description}")` : ''} and recalculate
+          the balance for every entry after it. This can't be undone.
+        </p>
+        <div className="modal-actions">
+          <button type="button" className="btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="btn-danger" onClick={handleConfirm} disabled={submitting}>
+            {submitting ? 'Deleting…' : 'Delete entry'}
+          </button>
+        </div>
       </div>
     </div>
   );

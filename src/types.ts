@@ -24,12 +24,15 @@ export interface Transaction {
   date: string;
   description: string | null;
   buyer: string | null;
+  order_no: string | null;
   lot_no: string | null;
   rack_no: string | null;
-  receiver: string | null;
-  issue: number;
-  receive: number;
+  receive_from_dye: number;
+  knitting_distribution: number;
+  return_qty: number;
   balance: number;
+  assorted: number;
+  wastage: number;
   remark: string | null;
   created_at: string;
 }
@@ -41,11 +44,31 @@ export interface CreateTransactionInput {
   date: string;
   description?: string;
   buyer?: string;
+  orderNo?: string;
   lotNo?: string;
   rackNo?: string;
-  receiver?: string;
-  issue: number;
-  receive: number;
+  receiveFromDye: number;
+  knittingDistribution: number;
+  returnQty: number;
+  assorted?: number;
+  wastage?: number;
+  remark?: string;
+}
+
+export interface UpdateTransactionInput {
+  id: number;
+  entryType: EntryType;
+  date: string;
+  description?: string;
+  buyer?: string;
+  orderNo?: string;
+  lotNo?: string;
+  rackNo?: string;
+  receiveFromDye: number;
+  knittingDistribution: number;
+  returnQty: number;
+  assorted?: number;
+  wastage?: number;
   remark?: string;
 }
 
@@ -75,8 +98,11 @@ export interface ReportQueryParams {
 }
 
 export interface ReportTotals {
-  totalReceived: number;
-  totalIssued: number;
+  totalReceivedFromDye: number;
+  totalKnittingDistribution: number;
+  totalReturnQty: number;
+  totalAssorted: number;
+  totalWastage: number;
   totalDryingLoss: number;
 }
 
@@ -111,6 +137,8 @@ declare global {
       transactions: {
         getByEntity: (params: GetTransactionsParams) => Promise<PaginatedTransactions>;
         create: (data: CreateTransactionInput) => Promise<Transaction>;
+        update: (data: UpdateTransactionInput) => Promise<Transaction>;
+        delete: (data: { id: number }) => Promise<{ id: number; deleted: boolean }>;
       };
       reports: {
         query: (params: ReportQueryParams) => Promise<ReportResult>;

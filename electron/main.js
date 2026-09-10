@@ -68,6 +68,17 @@ function initDb() {
       )
     `);
 
+    // ------------------------------------------------------------------
+    // transactions: rebuilt for the dye/knitting distribution workflow.
+    //
+    // Schema note (2026-09): this replaces the earlier issue/receive/receiver
+    // ledger structure. Test data only was in this table at the time of the
+    // change, so the table is dropped and recreated rather than migrated —
+    // if you are applying this against a database with real transactions,
+    // back it up first, since this DROP is destructive.
+    // ------------------------------------------------------------------
+    db.run('DROP TABLE IF EXISTS transactions');
+
     db.run(`
       CREATE TABLE IF NOT EXISTS transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,12 +88,15 @@ function initDb() {
         date TEXT NOT NULL,
         description TEXT,
         buyer TEXT,
+        order_no TEXT,
         lot_no TEXT,
         rack_no TEXT,
-        receiver TEXT,
-        issue REAL NOT NULL DEFAULT 0,
-        receive REAL NOT NULL DEFAULT 0,
+        receive_from_dye REAL NOT NULL DEFAULT 0,
+        knitting_distribution REAL NOT NULL DEFAULT 0,
+        return_qty REAL NOT NULL DEFAULT 0,
         balance REAL NOT NULL DEFAULT 0,
+        assorted REAL NOT NULL DEFAULT 0,
+        wastage REAL NOT NULL DEFAULT 0,
         remark TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
@@ -133,17 +147,21 @@ function registerIpcHandlers() {
 
   // Recompute running balances for one entity in chronological order.
   // Called whenever an insert lands out of date order.
+  //
+  // Balance formula: previous balance + receive_from_dye - knitting_distribution + return_qty
+  // assorted and wastage are display-only and never enter this calculation.
   function recalcBalances(entityType, entityId) {
     return new Promise((resolve, reject) => {
       db.all(
-        'SELECT id, issue, receive FROM transactions WHERE entity_type = ? AND entity_id = ? ORDER BY date ASC, id ASC',
+        'SELECT id, receive_from_dye, knitting_distribution, return_qty FROM transactions WHERE entity_type = ? AND entity_id = ? ORDER BY date ASC, id ASC',
         [entityType, entityId],
         (err, rows) => {
           if (err) return reject(err);
           let running = 0;
           const stmt = db.prepare('UPDATE transactions SET balance = ? WHERE id = ?');
           for (const row of rows) {
-            running += (row.receive || 0) - (row.issue || 0);
+            running +=
+              (row.receive_from_dye || 0) - (row.knitting_distribution || 0) + (row.return_qty || 0);
             stmt.run(running, row.id);
           }
           stmt.finalize((finalizeErr) => {
@@ -194,16 +212,22 @@ function registerIpcHandlers() {
       date,
       description,
       buyer,
+      orderNo,
       lotNo,
       rackNo,
-      receiver,
-      issue,
-      receive,
+      receiveFromDye,
+      knittingDistribution,
+      returnQty,
+      assorted,
+      wastage,
       remark,
     } = payload;
 
-    const issueVal = Number(issue) || 0;
-    const receiveVal = Number(receive) || 0;
+    const receiveFromDyeVal = Number(receiveFromDye) || 0;
+    const knittingDistributionVal = Number(knittingDistribution) || 0;
+    const returnQtyVal = Number(returnQty) || 0;
+    const assortedVal = Number(assorted) || 0;
+    const wastageVal = Number(wastage) || 0;
 
     // Is this entry chronologically after everything currently stored?
     const latest = await getAsync(
@@ -212,12 +236,14 @@ function registerIpcHandlers() {
     );
 
     const isAppend = !latest || date >= latest.date;
-    const provisionalBalance = (latest ? latest.balance : 0) + receiveVal - issueVal;
+    const provisionalBalance =
+      (latest ? latest.balance : 0) + receiveFromDyeVal - knittingDistributionVal + returnQtyVal;
 
     const result = await runAsync(
       `INSERT INTO transactions
-        (entity_type, entity_id, entry_type, date, description, buyer, lot_no, rack_no, receiver, issue, receive, balance, remark)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (entity_type, entity_id, entry_type, date, description, buyer, order_no, lot_no, rack_no,
+         receive_from_dye, knitting_distribution, return_qty, balance, assorted, wastage, remark)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         entityType,
         entityId,
@@ -225,12 +251,15 @@ function registerIpcHandlers() {
         date,
         description || null,
         buyer || null,
+        orderNo || null,
         lotNo || null,
         rackNo || null,
-        receiver || null,
-        issueVal,
-        receiveVal,
+        receiveFromDyeVal,
+        knittingDistributionVal,
+        returnQtyVal,
         provisionalBalance,
+        assortedVal,
+        wastageVal,
         remark || null,
       ]
     );
@@ -242,6 +271,81 @@ function registerIpcHandlers() {
     }
 
     return getAsync('SELECT * FROM transactions WHERE id = ?', [result.id]);
+  });
+
+  ipcMain.handle('transactions:update', async (_event, payload) => {
+    const {
+      id,
+      entryType,
+      date,
+      description,
+      buyer,
+      orderNo,
+      lotNo,
+      rackNo,
+      receiveFromDye,
+      knittingDistribution,
+      returnQty,
+      assorted,
+      wastage,
+      remark,
+    } = payload;
+
+    const existing = await getAsync('SELECT * FROM transactions WHERE id = ?', [id]);
+    if (!existing) {
+      throw new Error(`Transaction ${id} not found`);
+    }
+
+    const receiveFromDyeVal = Number(receiveFromDye) || 0;
+    const knittingDistributionVal = Number(knittingDistribution) || 0;
+    const returnQtyVal = Number(returnQty) || 0;
+    const assortedVal = Number(assorted) || 0;
+    const wastageVal = Number(wastage) || 0;
+
+    await runAsync(
+      `UPDATE transactions SET
+        entry_type = ?, date = ?, description = ?, buyer = ?, order_no = ?, lot_no = ?, rack_no = ?,
+        receive_from_dye = ?, knitting_distribution = ?, return_qty = ?, assorted = ?, wastage = ?, remark = ?
+       WHERE id = ?`,
+      [
+        entryType || 'NORMAL',
+        date,
+        description || null,
+        buyer || null,
+        orderNo || null,
+        lotNo || null,
+        rackNo || null,
+        receiveFromDyeVal,
+        knittingDistributionVal,
+        returnQtyVal,
+        assortedVal,
+        wastageVal,
+        remark || null,
+        id,
+      ]
+    );
+
+    // The edited row's date or amounts may have changed its position or
+    // effect on the running total — recompute the whole entity's balances
+    // rather than trying to reason about which rows are affected.
+    await recalcBalances(existing.entity_type, existing.entity_id);
+
+    return getAsync('SELECT * FROM transactions WHERE id = ?', [id]);
+  });
+
+  ipcMain.handle('transactions:delete', async (_event, { id }) => {
+    const existing = await getAsync('SELECT * FROM transactions WHERE id = ?', [id]);
+    if (!existing) {
+      throw new Error(`Transaction ${id} not found`);
+    }
+
+    await runAsync('DELETE FROM transactions WHERE id = ?', [id]);
+
+    // Every balance after the deleted row shifts by its contribution —
+    // recompute the whole entity rather than adjusting rows individually.
+    await recalcBalances(existing.entity_type, existing.entity_id);
+
+    return { id, deleted: true };
   });
 
   // ---------------------------------------------------------------------------
@@ -280,9 +384,12 @@ function registerIpcHandlers() {
 
     const totals = await getAsync(
       `SELECT
-        COALESCE(SUM(CASE WHEN entry_type != 'DRYING_LOSS' THEN receive ELSE 0 END), 0) as totalReceived,
-        COALESCE(SUM(CASE WHEN entry_type != 'DRYING_LOSS' THEN issue ELSE 0 END), 0) as totalIssued,
-        COALESCE(SUM(CASE WHEN entry_type = 'DRYING_LOSS' THEN issue ELSE 0 END), 0) as totalDryingLoss
+        COALESCE(SUM(CASE WHEN entry_type != 'DRYING_LOSS' THEN receive_from_dye ELSE 0 END), 0) as totalReceivedFromDye,
+        COALESCE(SUM(CASE WHEN entry_type != 'DRYING_LOSS' THEN knitting_distribution ELSE 0 END), 0) as totalKnittingDistribution,
+        COALESCE(SUM(return_qty), 0) as totalReturnQty,
+        COALESCE(SUM(assorted), 0) as totalAssorted,
+        COALESCE(SUM(wastage), 0) as totalWastage,
+        COALESCE(SUM(CASE WHEN entry_type = 'DRYING_LOSS' THEN knitting_distribution ELSE 0 END), 0) as totalDryingLoss
        FROM transactions ${where}`,
       params
     );
@@ -315,9 +422,12 @@ function registerIpcHandlers() {
 
     const totals = await getAsync(
       `SELECT
-        COALESCE(SUM(CASE WHEN entry_type != 'DRYING_LOSS' THEN receive ELSE 0 END), 0) as totalReceived,
-        COALESCE(SUM(CASE WHEN entry_type != 'DRYING_LOSS' THEN issue ELSE 0 END), 0) as totalIssued,
-        COALESCE(SUM(CASE WHEN entry_type = 'DRYING_LOSS' THEN issue ELSE 0 END), 0) as totalDryingLoss
+        COALESCE(SUM(CASE WHEN entry_type != 'DRYING_LOSS' THEN receive_from_dye ELSE 0 END), 0) as totalReceivedFromDye,
+        COALESCE(SUM(CASE WHEN entry_type != 'DRYING_LOSS' THEN knitting_distribution ELSE 0 END), 0) as totalKnittingDistribution,
+        COALESCE(SUM(return_qty), 0) as totalReturnQty,
+        COALESCE(SUM(assorted), 0) as totalAssorted,
+        COALESCE(SUM(wastage), 0) as totalWastage,
+        COALESCE(SUM(CASE WHEN entry_type = 'DRYING_LOSS' THEN knitting_distribution ELSE 0 END), 0) as totalDryingLoss
        FROM transactions ${where}`,
       params
     );
