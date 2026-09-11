@@ -1,14 +1,15 @@
 import { useState } from 'react';
-import { Boxes, BarChart3 } from 'lucide-react';
+import { Boxes, BarChart3, Users } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import CodeSubNav from './components/CodeSubNav';
 import LedgerTabs, { type LedgerView } from './components/LedgerTabs';
 import Ledger from './components/Ledger';
 import Reports from './components/Reports';
+import BuyerReport from './components/BuyerReport';
 import type { MaterialCode, RawMaterial } from './types';
 import './App.css';
 
-type Page = 'INVENTORY' | 'REPORTS';
+type Page = 'INVENTORY' | 'REPORTS' | 'BUYER_REPORT';
 
 function App() {
   const [page, setPage] = useState<Page>('INVENTORY');
@@ -60,64 +61,83 @@ function App() {
           <BarChart3 size={20} />
           <span>Reports</span>
         </button>
+        <button
+          type="button"
+          className={`nav-rail-item ${page === 'BUYER_REPORT' ? 'active' : ''}`}
+          onClick={() => setPage('BUYER_REPORT')}
+          title="Buyer & Order Search"
+        >
+          <Users size={20} />
+          <span>Buyers</span>
+        </button>
       </nav>
 
-      {page === 'INVENTORY' && (
-        <>
-          <Sidebar
-            selectedRawMaterialId={selectedRawMaterial?.id ?? null}
-            onSelectRawMaterial={handleSelectRawMaterial}
-            onDeletedRawMaterial={handleDeletedRawMaterial}
-            refreshKey={sidebarRefreshKey}
+      {/* All three pages stay mounted at all times (visibility toggled via
+          CSS) rather than conditionally rendered — conditional rendering
+          would unmount Reports/BuyerReport on navigation and wipe out their
+          filter state and search results every time you switch pages. */}
+      <div className={`page-panel ${page === 'INVENTORY' ? 'page-panel-active' : ''}`}>
+        <Sidebar
+          selectedRawMaterialId={selectedRawMaterial?.id ?? null}
+          onSelectRawMaterial={handleSelectRawMaterial}
+          onDeletedRawMaterial={handleDeletedRawMaterial}
+          refreshKey={sidebarRefreshKey}
+        />
+
+        <div className="main-panel">
+          <CodeSubNav
+            rawMaterial={selectedRawMaterial}
+            selectedCodeId={selectedCode?.id ?? null}
+            onSelectCode={handleSelectCode}
           />
 
-          <div className="main-panel">
-            <CodeSubNav
-              rawMaterial={selectedRawMaterial}
-              selectedCodeId={selectedCode?.id ?? null}
-              onSelectCode={handleSelectCode}
-            />
+          <LedgerTabs
+            activeView={activeView}
+            onChange={setActiveView}
+            codeSelected={selectedCode !== null}
+          />
 
-            <LedgerTabs
-              activeView={activeView}
-              onChange={setActiveView}
-              codeSelected={selectedCode !== null}
-            />
-
-            <div className="ledger-content">
-              {activeView === 'RAW_MATERIAL' && selectedRawMaterial && (
-                <Ledger
-                  entityType="RAW_MATERIAL"
-                  entityId={selectedRawMaterial.id}
-                  entityLabel={selectedRawMaterial.name}
-                  unit={selectedRawMaterial.unit}
-                />
-              )}
-              {activeView === 'COLOR_CODE' && selectedCode && (
-                <Ledger
-                  entityType="COLOR_CODE"
-                  entityId={selectedCode.id}
-                  entityLabel={selectedCode.code}
-                  unit={selectedRawMaterial?.unit ?? 'kg'}
-                />
-              )}
-              {!selectedRawMaterial && (
-                <p className="ledger-placeholder">
-                  Select or add a raw material to get started.
-                </p>
-              )}
-            </div>
+          <div className="ledger-content">
+            {activeView === 'RAW_MATERIAL' && selectedRawMaterial && (
+              <Ledger
+                entityType="RAW_MATERIAL"
+                entityId={selectedRawMaterial.id}
+                entityLabel={selectedRawMaterial.name}
+                unit={selectedRawMaterial.unit}
+              />
+            )}
+            {activeView === 'COLOR_CODE' && selectedCode && (
+              <Ledger
+                entityType="COLOR_CODE"
+                entityId={selectedCode.id}
+                entityLabel={selectedCode.code}
+                unit={selectedRawMaterial?.unit ?? 'kg'}
+              />
+            )}
+            {!selectedRawMaterial && (
+              <p className="ledger-placeholder">
+                Select or add a raw material to get started.
+              </p>
+            )}
           </div>
-        </>
-      )}
+        </div>
+      </div>
 
-      {page === 'REPORTS' && (
+      <div className={`page-panel ${page === 'REPORTS' ? 'page-panel-active' : ''}`}>
         <div className="main-panel">
           <div className="ledger-content">
             <Reports />
           </div>
         </div>
-      )}
+      </div>
+
+      <div className={`page-panel ${page === 'BUYER_REPORT' ? 'page-panel-active' : ''}`}>
+        <div className="main-panel">
+          <div className="ledger-content">
+            <BuyerReport />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

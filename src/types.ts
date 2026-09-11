@@ -137,6 +137,39 @@ export interface QuickOption {
   created_at: string;
 }
 
+// Cross-entity search report ("what did this buyer/order/lot/rack/
+// description touch across every raw material and color code"). At least
+// one filter must be supplied.
+export interface CrossReportFilters {
+  description?: string;
+  buyer?: string;
+  orderNo?: string;
+  lotNo?: string;
+  rackNo?: string;
+  startDate?: string;
+  endDate?: string;
+}
+
+export interface CrossReportGroup {
+  entityType: EntityType;
+  entityId: number;
+  label: string;
+  unit: string;
+  transactionCount: number;
+  totals: ReportTotals;
+  // The entity's actual current stock balance (from its full history) —
+  // NOT derived from the filtered/matched rows, and intentionally excluded
+  // from the grand total below, since summing balances across different
+  // entities has no real-world meaning.
+  currentBalance: number;
+}
+
+export interface CrossReportResult {
+  groups: CrossReportGroup[];
+  grandTotal: ReportTotals;
+  matchedTransactionCount: number;
+}
+
 declare global {
   interface Window {
     api: {
@@ -172,6 +205,9 @@ declare global {
         getAll: () => Promise<QuickOption[]>;
         create: (data: { field: QuickOptionField; value: string }) => Promise<QuickOption>;
         delete: (data: { id: number }) => Promise<{ id: number; deleted: boolean }>;
+      };
+      crossReport: {
+        search: (filters: CrossReportFilters) => Promise<CrossReportResult>;
       };
     };
   }

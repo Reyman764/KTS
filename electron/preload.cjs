@@ -31,4 +31,7 @@ contextBridge.exposeInMainWorld('api', {
     create: (data) => ipcRenderer.invoke('quick-options:create', data),
     delete: (data) => ipcRenderer.invoke('quick-options:delete', data),
   },
+  crossReport: {
+    search: (filters) => ipcRenderer.invoke('cross-report:search', filters),
+  },
 });

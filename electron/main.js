@@ -632,6 +632,196 @@ function registerIpcHandlers() {
 
     return { rows, totals };
   });
+
+  // ---------------------------------------------------------------------------
+  // Cross-entity search report — "what did this buyer/order/lot/rack/
+  // description touch across every raw material and color code" rather than
+  // the single-entity view above. Any combination of the five text filters
+  // can be supplied; matching is case-insensitive substring (LIKE), matching
+  // how a value typed or picked from the saved quick-options list would be
+  // searched for. Results are grouped by entity (raw material or color
+  // code), each with its own subtotal, plus one grand total across everything
+  // matched — mirrors a physical ledger book's "customer summary" page.
+  // ---------------------------------------------------------------------------
+  ipcMain.handle('cross-report:search', async (_event, filters) => {
+    const { description, buyer, orderNo, lotNo, rackNo, startDate, endDate } = filters || {};
+
+    const conditions = [];
+    const params = [];
+
+    if (description && description.trim()) {
+      conditions.push('description LIKE ? COLLATE NOCASE');
+      params.push(`%${description.trim()}%`);
+    }
+    if (buyer && buyer.trim()) {
+      conditions.push('buyer LIKE ? COLLATE NOCASE');
+      params.push(`%${buyer.trim()}%`);
+    }
+    if (orderNo && orderNo.trim()) {
+      conditions.push('order_no LIKE ? COLLATE NOCASE');
+      params.push(`%${orderNo.trim()}%`);
+    }
+    if (lotNo && lotNo.trim()) {
+      conditions.push('lot_no LIKE ? COLLATE NOCASE');
+      params.push(`%${lotNo.trim()}%`);
+    }
+    if (rackNo && rackNo.trim()) {
+      conditions.push('rack_no LIKE ? COLLATE NOCASE');
+      params.push(`%${rackNo.trim()}%`);
+    }
+    if (startDate) {
+      conditions.push('date >= ?');
+      params.push(startDate);
+    }
+    if (endDate) {
+      conditions.push('date <= ?');
+      params.push(endDate);
+    }
+
+    // No filters supplied at all — refuse rather than dump every transaction
+    // in the database into one report.
+    if (conditions.length === 0) {
+      return { groups: [], grandTotal: emptyReportTotals(), matchedTransactionCount: 0 };
+    }
+
+    const where = `WHERE ${conditions.join(' AND ')}`;
+
+    const matches = await allAsync(
+      `SELECT entity_type, entity_id, entry_type, receive_from_dye, knitting_distribution,
+              return_qty, assorted, wastage
+       FROM transactions ${where}`,
+      params
+    );
+
+    if (matches.length === 0) {
+      return { groups: [], grandTotal: emptyReportTotals(), matchedTransactionCount: 0 };
+    }
+
+    // Group in JS rather than SQL GROUP BY, since each group also needs a
+    // human-readable label resolved from a different table depending on
+    // entity_type (raw_materials vs material_codes joined to its parent).
+    const groupMap = new Map();
+    for (const row of matches) {
+      const key = `${row.entity_type}:${row.entity_id}`;
+      if (!groupMap.has(key)) {
+        groupMap.set(key, {
+          entityType: row.entity_type,
+          entityId: row.entity_id,
+          totals: emptyReportTotals(),
+          transactionCount: 0,
+        });
+      }
+      const group = groupMap.get(key);
+      group.transactionCount += 1;
+      if (row.entry_type !== 'DRYING_LOSS') {
+        group.totals.totalReceivedFromDye += row.receive_from_dye || 0;
+        group.totals.totalKnittingDistribution += row.knitting_distribution || 0;
+      } else {
+        group.totals.totalDryingLoss += row.knitting_distribution || 0;
+      }
+      group.totals.totalReturnQty += row.return_qty || 0;
+      group.totals.totalAssorted += row.assorted || 0;
+      group.totals.totalWastage += row.wastage || 0;
+    }
+
+    // Resolve display labels. Raw materials and color codes are looked up
+    // in bulk (not one query per group) since a wide search can touch
+    // hundreds of entities.
+    const rawMaterialIds = [...groupMap.values()]
+      .filter((g) => g.entityType === 'RAW_MATERIAL')
+      .map((g) => g.entityId);
+    const colorCodeIds = [...groupMap.values()]
+      .filter((g) => g.entityType === 'COLOR_CODE')
+      .map((g) => g.entityId);
+
+    const rawMaterialRows = rawMaterialIds.length
+      ? await allAsync(
+          `SELECT id, name, unit FROM raw_materials WHERE id IN (${rawMaterialIds.map(() => '?').join(',')})`,
+          rawMaterialIds
+        )
+      : [];
+    const colorCodeRows = colorCodeIds.length
+      ? await allAsync(
+          `SELECT mc.id, mc.code, rm.name as raw_material_name, rm.unit as unit
+           FROM material_codes mc
+           JOIN raw_materials rm ON rm.id = mc.raw_material_id
+           WHERE mc.id IN (${colorCodeIds.map(() => '?').join(',')})`,
+          colorCodeIds
+        )
+      : [];
+
+    const rawMaterialById = new Map(rawMaterialRows.map((r) => [r.id, r]));
+    const colorCodeById = new Map(colorCodeRows.map((r) => [r.id, r]));
+
+    // Each entity's real current balance is its latest transaction's stored
+    // balance across its FULL history — not derived from the filtered/matched
+    // rows above, since those are only a subset (e.g. just this buyer's
+    // entries) and summing a subset of movements would not equal the
+    // entity's actual stock level. One query per matched entity is
+    // acceptable here since group counts are small relative to total
+    // transaction volume (a search result is a handful to a few dozen
+    // entities, not thousands).
+    const balanceByKey = new Map();
+    for (const group of groupMap.values()) {
+      const key = `${group.entityType}:${group.entityId}`;
+      const latest = await getAsync(
+        'SELECT balance FROM transactions WHERE entity_type = ? AND entity_id = ? ORDER BY date DESC, id DESC LIMIT 1',
+        [group.entityType, group.entityId]
+      );
+      balanceByKey.set(key, latest ? latest.balance : 0);
+    }
+
+    const grandTotal = emptyReportTotals();
+    const groups = [];
+
+    for (const group of groupMap.values()) {
+      let label;
+      let unit = 'kg';
+      if (group.entityType === 'RAW_MATERIAL') {
+        const rm = rawMaterialById.get(group.entityId);
+        label = rm ? rm.name : `Raw material #${group.entityId} (deleted)`;
+        unit = rm ? rm.unit : 'kg';
+      } else {
+        const cc = colorCodeById.get(group.entityId);
+        label = cc ? `${cc.raw_material_name} — ${cc.code}` : `Color code #${group.entityId} (deleted)`;
+        unit = cc ? cc.unit : 'kg';
+      }
+
+      groups.push({
+        entityType: group.entityType,
+        entityId: group.entityId,
+        label,
+        unit,
+        transactionCount: group.transactionCount,
+        totals: group.totals,
+        currentBalance: balanceByKey.get(`${group.entityType}:${group.entityId}`) ?? 0,
+      });
+
+      grandTotal.totalReceivedFromDye += group.totals.totalReceivedFromDye;
+      grandTotal.totalKnittingDistribution += group.totals.totalKnittingDistribution;
+      grandTotal.totalReturnQty += group.totals.totalReturnQty;
+      grandTotal.totalAssorted += group.totals.totalAssorted;
+      grandTotal.totalWastage += group.totals.totalWastage;
+      grandTotal.totalDryingLoss += group.totals.totalDryingLoss;
+    }
+
+    // Sort by label so results read alphabetically/naturally rather than in
+    // arbitrary map-iteration order.
+    groups.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
+
+    return { groups, grandTotal, matchedTransactionCount: matches.length };
+  });
+}
+
+function emptyReportTotals() {
+  return {
+    totalReceivedFromDye: 0,
+    totalKnittingDistribution: 0,
+    totalReturnQty: 0,
+    totalAssorted: 0,
+    totalWastage: 0,
+    totalDryingLoss: 0,
+  };
 }
 
 // ---------------------------------------------------------------------------
