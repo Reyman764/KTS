@@ -25,6 +25,14 @@
 //                                                    small transaction set)
 //   node scripts/seed-test-data.js 8000 --full      (custom bulk txn count
 //                                                    with --full)
+//   node scripts/seed-test-data.js --fix-balances   (repairs existing rows
+//                                                    affected by a past
+//                                                    seeding bug where color
+//                                                    code balances could be
+//                                                    scrambled out of date
+//                                                    order — safe to run any
+//                                                    time, recalculates every
+//                                                    entity from scratch)
 //
 // Safe to run multiple times — it just adds more transactions each time,
 // it does not delete or reset anything.
@@ -224,6 +232,21 @@ async function seedColorCodeTransactions(colorCodeId, count) {
   let runningBalance = latest ? latest.balance : 0;
   const baseDate = new Date('2024-01-01').getTime();
 
+  // Bug fix (2026-09): dates used to be picked independently at random per
+  // row (randomInt(0, 600) each time), with runningBalance accumulated in
+  // insertion order. Since rows are always *displayed* sorted by date, an
+  // out-of-order insertion sequence meant the balance shown next to each
+  // date was really the cumulative total from a different, scrambled
+  // chronological order — producing balances that looked shuffled between
+  // rows. Fix: pick `count` distinct day offsets first, sort them, then
+  // insert in that sorted order — so insertion order and date order always
+  // match, exactly like the bulk seeder (seedTransactions) already does.
+  const dayOffsets = new Set();
+  while (dayOffsets.size < count) {
+    dayOffsets.add(randomInt(0, 600));
+  }
+  const sortedOffsets = [...dayOffsets].sort((a, b) => a - b);
+
   const stmt = db.prepare(`
     INSERT INTO transactions
       (entity_type, entity_id, entry_type, date, description, buyer, order_no, lot_no, rack_no,
@@ -238,7 +261,7 @@ async function seedColorCodeTransactions(colorCodeId, count) {
 
     runningBalance += receiveFromDye - knittingDistribution + returnQty;
 
-    const date = randomDateWithinLastYear(baseDate, randomInt(0, 600));
+    const date = randomDateWithinLastYear(baseDate, sortedOffsets[i]);
 
     stmt.run(
       'COLOR_CODE',
@@ -288,6 +311,48 @@ async function seedColorCodesUnder(rawMaterial) {
   await runAsync('COMMIT');
 
   console.log(`Seeded 1000 color codes (MS-1..MS-1000) with ${totalTransactions} total transactions.`);
+}
+
+// ---------------------------------------------------------------------
+// Balance repair — fixes existing rows affected by the seeding bug above
+// (scrambled per-row dates meaning stored balances don't match date order).
+// Recomputes every entity's balances from scratch in correct chronological
+// order, the same way the app's own recalcBalances() does.
+// ---------------------------------------------------------------------
+
+async function fixAllBalances() {
+  const entities = await allAsync(
+    'SELECT DISTINCT entity_type, entity_id FROM transactions'
+  );
+
+  console.log(`Recalculating balances for ${entities.length} entities...`);
+
+  let done = 0;
+  for (const { entity_type, entity_id } of entities) {
+    const rows = await allAsync(
+      'SELECT id, receive_from_dye, knitting_distribution, return_qty FROM transactions WHERE entity_type = ? AND entity_id = ? ORDER BY date ASC, id ASC',
+      [entity_type, entity_id]
+    );
+
+    await runAsync('BEGIN TRANSACTION');
+    let running = 0;
+    const stmt = db.prepare('UPDATE transactions SET balance = ? WHERE id = ?');
+    for (const row of rows) {
+      running += (row.receive_from_dye || 0) - (row.knitting_distribution || 0) + (row.return_qty || 0);
+      stmt.run(running, row.id);
+    }
+    await new Promise((resolve, reject) => {
+      stmt.finalize((err) => (err ? reject(err) : resolve()));
+    });
+    await runAsync('COMMIT');
+
+    done++;
+    if (done % 200 === 0) {
+      console.log(`  ...${done}/${entities.length} entities fixed`);
+    }
+  }
+
+  console.log(`\nDone. Recalculated balances for ${entities.length} entities.`);
 }
 
 // ---------------------------------------------------------------------
@@ -345,10 +410,13 @@ async function main() {
   const args = process.argv.slice(2);
   const fullMode = args.includes('--full');
   const codesOnly = args.includes('--codes');
+  const fixBalances = args.includes('--fix-balances');
   const numericArg = args.find((a) => /^\d+$/.test(a));
   const bulkCount = numericArg ? Number(numericArg) : 5000;
 
-  if (fullMode) {
+  if (fixBalances) {
+    await fixAllBalances();
+  } else if (fullMode) {
     await runFull(bulkCount);
   } else if (codesOnly) {
     await runCodesOnly();

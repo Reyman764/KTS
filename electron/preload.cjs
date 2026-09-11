@@ -26,4 +26,9 @@ contextBridge.exposeInMainWorld('api', {
     query: (params) => ipcRenderer.invoke('reports:query', params),
     queryAll: (params) => ipcRenderer.invoke('reports:queryAll', params),
   },
+  quickOptions: {
+    getAll: () => ipcRenderer.invoke('quick-options:getAll'),
+    create: (data) => ipcRenderer.invoke('quick-options:create', data),
+    delete: (data) => ipcRenderer.invoke('quick-options:delete', data),
+  },
 });

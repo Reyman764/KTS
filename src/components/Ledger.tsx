@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
-import type { EntityType, EntryType, Transaction } from '../types';
+import type { EntityType, EntryType, QuickOption, Transaction } from '../types';
 import { transactionsApi } from '../api/transactions';
+import { quickOptionsApi } from '../api/quickOptions';
+import ComboBoxInput from './ComboBoxInput';
 
 interface LedgerProps {
   entityType: EntityType;
@@ -23,6 +25,14 @@ export default function Ledger({ entityType, entityId, entityLabel, unit }: Ledg
   const [deletingRow, setDeletingRow] = useState<Transaction | null>(null);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [quickOptions, setQuickOptions] = useState<QuickOption[]>([]);
+
+  useEffect(() => {
+    quickOptionsApi
+      .getAll()
+      .then(setQuickOptions)
+      .catch((err) => console.error('Failed to load quick options', err));
+  }, []);
 
   const load = useCallback(
     async (targetPage: number) => {
@@ -206,6 +216,8 @@ export default function Ledger({ entityType, entityId, entityLabel, unit }: Ledg
           entityId={entityId}
           onClose={() => setModalOpen(false)}
           onCreated={handleCreated}
+          quickOptions={quickOptions}
+          onQuickOptionsChange={setQuickOptions}
         />
       )}
 
@@ -214,6 +226,8 @@ export default function Ledger({ entityType, entityId, entityLabel, unit }: Ledg
           transaction={editingRow}
           onClose={() => setEditingRow(null)}
           onUpdated={handleUpdated}
+          quickOptions={quickOptions}
+          onQuickOptionsChange={setQuickOptions}
         />
       )}
 
@@ -253,9 +267,11 @@ interface EntryFormFieldsProps {
   values: EntryFormValues;
   onChange: <K extends keyof EntryFormValues>(field: K, value: EntryFormValues[K]) => void;
   idPrefix: string;
+  quickOptions: QuickOption[];
+  onQuickOptionsChange: (options: QuickOption[]) => void;
 }
 
-function EntryFormFields({ values, onChange, idPrefix }: EntryFormFieldsProps) {
+function EntryFormFields({ values, onChange, idPrefix, quickOptions, onQuickOptionsChange }: EntryFormFieldsProps) {
   return (
     <div className="form-grid">
       <div>
@@ -283,52 +299,62 @@ function EntryFormFields({ values, onChange, idPrefix }: EntryFormFieldsProps) {
 
       <div className="span-2">
         <label className="field-label" htmlFor={`${idPrefix}-desc`}>Description</label>
-        <input
+        <ComboBoxInput
           id={`${idPrefix}-desc`}
-          type="text"
+          field="description"
           value={values.description}
-          onChange={(e) => onChange('description', e.target.value)}
+          onChange={(v) => onChange('description', v)}
+          options={quickOptions}
+          onOptionsChange={onQuickOptionsChange}
         />
       </div>
 
       <div>
         <label className="field-label" htmlFor={`${idPrefix}-buyer`}>Buyer</label>
-        <input
+        <ComboBoxInput
           id={`${idPrefix}-buyer`}
-          type="text"
+          field="buyer"
           value={values.buyer}
-          onChange={(e) => onChange('buyer', e.target.value)}
+          onChange={(v) => onChange('buyer', v)}
+          options={quickOptions}
+          onOptionsChange={onQuickOptionsChange}
         />
       </div>
 
       <div>
         <label className="field-label" htmlFor={`${idPrefix}-order`}>Order No.</label>
-        <input
+        <ComboBoxInput
           id={`${idPrefix}-order`}
-          type="text"
+          field="order_no"
           value={values.orderNo}
-          onChange={(e) => onChange('orderNo', e.target.value)}
+          onChange={(v) => onChange('orderNo', v)}
+          options={quickOptions}
+          onOptionsChange={onQuickOptionsChange}
           placeholder="e.g. JP-2026-014"
         />
       </div>
 
       <div>
         <label className="field-label" htmlFor={`${idPrefix}-lot`}>Lot No</label>
-        <input
+        <ComboBoxInput
           id={`${idPrefix}-lot`}
-          type="text"
+          field="lot_no"
           value={values.lotNo}
-          onChange={(e) => onChange('lotNo', e.target.value)}
+          onChange={(v) => onChange('lotNo', v)}
+          options={quickOptions}
+          onOptionsChange={onQuickOptionsChange}
         />
       </div>
 
       <div>
         <label className="field-label" htmlFor={`${idPrefix}-rack`}>Rack No</label>
-        <input
+        <ComboBoxInput
           id={`${idPrefix}-rack`}
-          type="text"
+          field="rack_no"
           value={values.rackNo}
-          onChange={(e) => onChange('rackNo', e.target.value)}
+          onChange={(v) => onChange('rackNo', v)}
+          options={quickOptions}
+          onOptionsChange={onQuickOptionsChange}
         />
       </div>
 
@@ -440,9 +466,18 @@ interface AddEntryModalProps {
   entityId: number;
   onClose: () => void;
   onCreated: () => void;
+  quickOptions: QuickOption[];
+  onQuickOptionsChange: (options: QuickOption[]) => void;
 }
 
-function AddEntryModal({ entityType, entityId, onClose, onCreated }: AddEntryModalProps) {
+function AddEntryModal({
+  entityType,
+  entityId,
+  onClose,
+  onCreated,
+  quickOptions,
+  onQuickOptionsChange,
+}: AddEntryModalProps) {
   const [values, setValues] = useState<EntryFormValues>({
     date: new Date().toISOString().slice(0, 10),
     entryType: 'NORMAL',
@@ -512,7 +547,13 @@ function AddEntryModal({ entityType, entityId, onClose, onCreated }: AddEntryMod
       <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
         <h3>Add ledger entry</h3>
         <form onSubmit={handleSubmit}>
-          <EntryFormFields values={values} onChange={handleChange} idPrefix="add-entry" />
+          <EntryFormFields
+            values={values}
+            onChange={handleChange}
+            idPrefix="add-entry"
+            quickOptions={quickOptions}
+            onQuickOptionsChange={onQuickOptionsChange}
+          />
 
           {error && <p className="field-error">{error}</p>}
 
@@ -538,9 +579,17 @@ interface EditEntryModalProps {
   transaction: Transaction;
   onClose: () => void;
   onUpdated: () => void;
+  quickOptions: QuickOption[];
+  onQuickOptionsChange: (options: QuickOption[]) => void;
 }
 
-function EditEntryModal({ transaction, onClose, onUpdated }: EditEntryModalProps) {
+function EditEntryModal({
+  transaction,
+  onClose,
+  onUpdated,
+  quickOptions,
+  onQuickOptionsChange,
+}: EditEntryModalProps) {
   const [values, setValues] = useState<EntryFormValues>({
     date: transaction.date,
     entryType: transaction.entry_type,
@@ -609,7 +658,13 @@ function EditEntryModal({ transaction, onClose, onUpdated }: EditEntryModalProps
       <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
         <h3>Edit ledger entry</h3>
         <form onSubmit={handleSubmit}>
-          <EntryFormFields values={values} onChange={handleChange} idPrefix="edit-entry" />
+          <EntryFormFields
+            values={values}
+            onChange={handleChange}
+            idPrefix="edit-entry"
+            quickOptions={quickOptions}
+            onQuickOptionsChange={onQuickOptionsChange}
+          />
 
           {error && <p className="field-error">{error}</p>}
 

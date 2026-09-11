@@ -127,6 +127,16 @@ export interface DeleteImpact {
   transactionCount: number;
 }
 
+// Saved dropdown values for the ledger entry form's combo-box fields.
+export type QuickOptionField = 'description' | 'buyer' | 'rack_no' | 'lot_no' | 'order_no';
+
+export interface QuickOption {
+  id: number;
+  field: QuickOptionField;
+  value: string;
+  created_at: string;
+}
+
 declare global {
   interface Window {
     api: {
@@ -157,6 +167,11 @@ declare global {
       reports: {
         query: (params: ReportQueryParams) => Promise<ReportResult>;
         queryAll: (params: Omit<ReportQueryParams, 'page' | 'pageSize'>) => Promise<ReportFullResult>;
+      };
+      quickOptions: {
+        getAll: () => Promise<QuickOption[]>;
+        create: (data: { field: QuickOptionField; value: string }) => Promise<QuickOption>;
+        delete: (data: { id: number }) => Promise<{ id: number; deleted: boolean }>;
       };
     };
   }

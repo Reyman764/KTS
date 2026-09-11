@@ -105,6 +105,26 @@ function initDb() {
     db.run('CREATE INDEX IF NOT EXISTS idx_codes_raw_material ON material_codes(raw_material_id)');
     db.run('CREATE INDEX IF NOT EXISTS idx_txn_entity ON transactions(entity_type, entity_id)');
     db.run('CREATE INDEX IF NOT EXISTS idx_txn_date ON transactions(date)');
+
+    // ------------------------------------------------------------------
+    // quick_options: saved values for the Description / Buyer / Rack No /
+    // Lot No / Order No combo-box fields on the ledger entry form, so
+    // repeated values can be picked instead of retyped (avoiding typos on
+    // names that recur constantly, like buyer or rack). Shared globally
+    // across all raw materials and color codes, not scoped per entity.
+    // `field` identifies which form field a value belongs to.
+    // ------------------------------------------------------------------
+    db.run(`
+      CREATE TABLE IF NOT EXISTS quick_options (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        field TEXT NOT NULL CHECK (field IN ('description', 'buyer', 'rack_no', 'lot_no', 'order_no')),
+        value TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (field, value)
+      )
+    `);
+
+    db.run('CREATE INDEX IF NOT EXISTS idx_quick_options_field ON quick_options(field)');
   });
 }
 
@@ -261,6 +281,41 @@ function registerIpcHandlers() {
       throw err;
     }
 
+    return { id, deleted: true };
+  });
+
+  // ---------------------------------------------------------------------------
+  // Quick options (saved dropdown values for Description / Buyer / Rack No /
+  // Lot No / Order No)
+  // ---------------------------------------------------------------------------
+  ipcMain.handle('quick-options:getAll', async () => {
+    return allAsync('SELECT * FROM quick_options ORDER BY field ASC, value COLLATE NOCASE ASC');
+  });
+
+  ipcMain.handle('quick-options:create', async (_event, { field, value }) => {
+    const trimmed = (value || '').trim();
+    if (!trimmed) {
+      throw new Error('Value cannot be empty');
+    }
+    const existing = await getAsync(
+      'SELECT * FROM quick_options WHERE field = ? AND value = ? COLLATE NOCASE',
+      [field, trimmed]
+    );
+    if (existing) return existing;
+
+    const result = await runAsync(
+      'INSERT INTO quick_options (field, value) VALUES (?, ?)',
+      [field, trimmed]
+    );
+    return getAsync('SELECT * FROM quick_options WHERE id = ?', [result.id]);
+  });
+
+  ipcMain.handle('quick-options:delete', async (_event, { id }) => {
+    const existing = await getAsync('SELECT * FROM quick_options WHERE id = ?', [id]);
+    if (!existing) {
+      throw new Error(`Quick option ${id} not found`);
+    }
+    await runAsync('DELETE FROM quick_options WHERE id = ?', [id]);
     return { id, deleted: true };
   });
 
