@@ -119,12 +119,23 @@ export interface ReportFullResult {
   totals: ReportTotals;
 }
 
+// Impact of deleting a raw material or color code — how many dependent rows
+// would be cascade-deleted along with it. colorCodeCount only applies to
+// raw materials (a color code has no child codes of its own).
+export interface DeleteImpact {
+  colorCodeCount?: number;
+  transactionCount: number;
+}
+
 declare global {
   interface Window {
     api: {
       rawMaterials: {
         getAll: () => Promise<RawMaterial[]>;
         create: (data: { name: string; unit?: string }) => Promise<RawMaterial>;
+        update: (data: { id: number; name: string; unit?: string }) => Promise<RawMaterial>;
+        getDeleteImpact: (id: number) => Promise<DeleteImpact>;
+        delete: (id: number) => Promise<{ id: number; deleted: boolean }>;
       };
       materialCodes: {
         getByRawMaterial: (rawMaterialId: number) => Promise<MaterialCode[]>;
@@ -133,6 +144,9 @@ declare global {
           code: string;
           description?: string;
         }) => Promise<MaterialCode>;
+        update: (data: { id: number; code: string; description?: string }) => Promise<MaterialCode>;
+        getDeleteImpact: (id: number) => Promise<DeleteImpact>;
+        delete: (id: number) => Promise<{ id: number; deleted: boolean }>;
       };
       transactions: {
         getByEntity: (params: GetTransactionsParams) => Promise<PaginatedTransactions>;

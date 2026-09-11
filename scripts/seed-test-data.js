@@ -10,9 +10,21 @@
 // receiver are gone). This script generates data for the new columns.
 //
 // Usage:
-//   node scripts/seed-test-data.js
-//   node scripts/seed-test-data.js --codes        (seeds MS-1..MS-1000 color codes instead)
-//   node scripts/seed-test-data.js 5000 --codes    (custom bulk count AND seed color codes)
+//   node scripts/seed-test-data.js                 (bulk-only: 5000 txns on a
+//                                                    dedicated raw material)
+//   node scripts/seed-test-data.js 5000             (custom bulk txn count)
+//   node scripts/seed-test-data.js --codes          (color-code-only: seeds
+//                                                    MS-1..MS-1000 under a
+//                                                    dedicated raw material)
+//   node scripts/seed-test-data.js --full           (combined: ONE raw
+//                                                    material with 5000 bulk
+//                                                    transactions on its own
+//                                                    ledger AND MS-1..MS-1000
+//                                                    color codes underneath
+//                                                    it, each with their own
+//                                                    small transaction set)
+//   node scripts/seed-test-data.js 8000 --full      (custom bulk txn count
+//                                                    with --full)
 //
 // Safe to run multiple times — it just adds more transactions each time,
 // it does not delete or reset anything.
@@ -90,15 +102,13 @@ function randomDateWithinLastYear(startOffset, dayIndex) {
   return date.toISOString().slice(0, 10);
 }
 
-async function ensureTestRawMaterial() {
-  const existing = await getAsync(
-    "SELECT * FROM raw_materials WHERE name = 'TEST SEED - Bulk Wool'"
-  );
+async function ensureRawMaterial(name) {
+  const existing = await getAsync('SELECT * FROM raw_materials WHERE name = ?', [name]);
   if (existing) return existing;
 
   const result = await runAsync(
-    "INSERT INTO raw_materials (name, unit) VALUES (?, ?)",
-    ['TEST SEED - Bulk Wool', 'kg']
+    'INSERT INTO raw_materials (name, unit) VALUES (?, ?)',
+    [name, 'kg']
   );
   return getAsync('SELECT * FROM raw_materials WHERE id = ?', [result.id]);
 }
@@ -191,19 +201,6 @@ async function seedTransactions(entityType, entityId, count) {
 // color-code ledger view at scale.
 // ---------------------------------------------------------------------
 
-async function ensureColorTestRawMaterial() {
-  const existing = await getAsync(
-    "SELECT * FROM raw_materials WHERE name = 'TEST SEED - Color Codes'"
-  );
-  if (existing) return existing;
-
-  const result = await runAsync(
-    "INSERT INTO raw_materials (name, unit) VALUES (?, ?)",
-    ['TEST SEED - Color Codes', 'kg']
-  );
-  return getAsync('SELECT * FROM raw_materials WHERE id = ?', [result.id]);
-}
-
 async function ensureColorCode(rawMaterialId, code) {
   const existing = await getAsync(
     'SELECT * FROM material_codes WHERE raw_material_id = ? AND code = ?',
@@ -268,10 +265,8 @@ async function seedColorCodeTransactions(colorCodeId, count) {
   });
 }
 
-async function seedColorCodes() {
-  const material = await ensureColorTestRawMaterial();
-  console.log(`Using raw material: "${material.name}" (id ${material.id})`);
-  console.log('Seeding color codes MS-1 through MS-1000, each with 1-5 random transactions...');
+async function seedColorCodesUnder(rawMaterial) {
+  console.log(`Seeding color codes MS-1 through MS-1000 under "${rawMaterial.name}" (id ${rawMaterial.id})...`);
 
   await runAsync('BEGIN TRANSACTION');
 
@@ -279,7 +274,7 @@ async function seedColorCodes() {
 
   for (let n = 1; n <= 1000; n++) {
     const code = `MS-${n}`;
-    const colorCode = await ensureColorCode(material.id, code);
+    const colorCode = await ensureColorCode(rawMaterial.id, code);
 
     const txnCount = randomInt(1, 5);
     await seedColorCodeTransactions(colorCode.id, txnCount);
@@ -292,32 +287,73 @@ async function seedColorCodes() {
 
   await runAsync('COMMIT');
 
-  console.log(`\nDone. Seeded 1000 color codes (MS-1..MS-1000) under "${material.name}"`);
-  console.log(`Total transactions inserted: ${totalTransactions}`);
-  console.log('Open the app, select "TEST SEED - Color Codes" in the sidebar, and check the color code pill list + ledger.');
+  console.log(`Seeded 1000 color codes (MS-1..MS-1000) with ${totalTransactions} total transactions.`);
+}
+
+// ---------------------------------------------------------------------
+// Mode runners
+// ---------------------------------------------------------------------
+
+async function runBulkOnly(count) {
+  const material = await ensureRawMaterial('TEST SEED - Bulk Wool');
+  console.log(`Using raw material: "${material.name}" (id ${material.id})`);
+
+  await seedTransactions('RAW_MATERIAL', material.id, count);
+
+  const total = await getAsync(
+    'SELECT COUNT(*) as count FROM transactions WHERE entity_type = ? AND entity_id = ?',
+    ['RAW_MATERIAL', material.id]
+  );
+
+  console.log(`\nDone. "${material.name}" now has ${total.count} total bulk transactions.`);
+  console.log('Open the app, select "TEST SEED - Bulk Wool" in the sidebar, and check the ledger + Reports page speed.');
+}
+
+async function runCodesOnly() {
+  const material = await ensureRawMaterial('TEST SEED - Color Codes');
+  console.log(`Using raw material: "${material.name}" (id ${material.id})`);
+
+  await seedColorCodesUnder(material);
+
+  console.log(`\nDone. Open the app, select "TEST SEED - Color Codes" in the sidebar, and check the color code pill list + ledger.`);
+}
+
+// Combined mode: ONE raw material carries both the bulk-ledger transactions
+// AND the MS-1..MS-1000 color codes (each with their own small transaction
+// set), so you can stress-test the bulk ledger, the color-code subnav, and
+// switching between the two ledger tabs, all under a single sidebar entry.
+async function runFull(bulkCount) {
+  const material = await ensureRawMaterial('TEST SEED - Full (Bulk + Codes)');
+  console.log(`Using raw material: "${material.name}" (id ${material.id})`);
+
+  await seedTransactions('RAW_MATERIAL', material.id, bulkCount);
+
+  const bulkTotal = await getAsync(
+    'SELECT COUNT(*) as count FROM transactions WHERE entity_type = ? AND entity_id = ?',
+    ['RAW_MATERIAL', material.id]
+  );
+  console.log(`Bulk ledger now has ${bulkTotal.count} total transactions.`);
+
+  await seedColorCodesUnder(material);
+
+  console.log(`\nDone. "${material.name}" has ${bulkTotal.count} bulk transactions on its own ledger`);
+  console.log('and 1000 color codes (MS-1..MS-1000) underneath it, each with 1-5 transactions.');
+  console.log('Open the app and select "TEST SEED - Full (Bulk + Codes)" in the sidebar to check both.');
 }
 
 async function main() {
   const args = process.argv.slice(2);
-  const seedCodes = args.includes('--codes');
+  const fullMode = args.includes('--full');
+  const codesOnly = args.includes('--codes');
   const numericArg = args.find((a) => /^\d+$/.test(a));
-  const count = numericArg ? Number(numericArg) : 5000;
+  const bulkCount = numericArg ? Number(numericArg) : 5000;
 
-  if (seedCodes) {
-    await seedColorCodes();
+  if (fullMode) {
+    await runFull(bulkCount);
+  } else if (codesOnly) {
+    await runCodesOnly();
   } else {
-    const material = await ensureTestRawMaterial();
-    console.log(`Using raw material: "${material.name}" (id ${material.id})`);
-
-    await seedTransactions('RAW_MATERIAL', material.id, count);
-
-    const total = await getAsync(
-      'SELECT COUNT(*) as count FROM transactions WHERE entity_type = ? AND entity_id = ?',
-      ['RAW_MATERIAL', material.id]
-    );
-
-    console.log(`\nDone. "${material.name}" now has ${total.count} total transactions.`);
-    console.log('Open the app, select "TEST SEED - Bulk Wool" in the sidebar, and check the ledger + Reports page speed.');
+    await runBulkOnly(bulkCount);
   }
 
   db.close();

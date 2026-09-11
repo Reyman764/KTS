@@ -228,6 +228,54 @@
   outline-offset: 2px;
 }
 
+/* Sidebar rows: wraps each raw-material button together with its
+   hover-revealed edit/delete icons, so the two can sit side by side
+   without the icons pushing the active-state background around.
+   Height is explicit (not just padding-driven) because the virtualized
+   list (used above ~60 raw materials) computes row positions from a
+   fixed pixel height — it must match ROW_HEIGHT in Sidebar.tsx. */
+.sidebar-item-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 38px;
+  box-sizing: border-box;
+}
+
+.sidebar-item-row .sidebar-item {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.sidebar-item-row .sidebar-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-item-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.sidebar-item-row:hover .sidebar-item-actions,
+.sidebar-item-row:focus-within .sidebar-item-actions {
+  opacity: 1;
+}
+
+/* Virtualized variant of .sidebar-list: same look, but scrolls its own
+   fixed-height viewport instead of growing with content, since the
+   virtualizer positions rows absolutely inside it. */
+.sidebar-list-virtual {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: block;
+}
+
 
 /* ---------------------------------------------------------------------- */
 /* Sub-navigation (color codes)                                          */
@@ -248,18 +296,19 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   margin-bottom: 10px;
 }
 
 .subnav-header-toggle {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  width: 100%;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
   border: none;
   background: none;
   padding: 4px 6px;
-  margin-bottom: 6px;
   cursor: default;
   border-radius: var(--radius-sm);
   transition: background var(--transition-fast);
@@ -281,6 +330,10 @@
   font-weight: 600;
   color: var(--ink-muted);
   letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .subnav-title-selected {
@@ -411,6 +464,68 @@
   border-color: var(--accent-soft-border);
   color: var(--accent-hover);
   font-weight: 600;
+}
+
+/* Subnav pill + hover-revealed edit/delete icons: wraps a pill together
+   with its two small circular action buttons so they read as one unit
+   in the wrapped pill list. */
+.subnav-item-wrap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 18px;
+}
+
+.subnav-item-wrap .subnav-item {
+  padding-right: 10px;
+}
+
+.subnav-item-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: var(--ink-faint);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.subnav-item-wrap:hover .subnav-item-action,
+.subnav-item-action:focus-visible {
+  opacity: 1;
+}
+
+.subnav-item-action:hover {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
+.subnav-item-action-danger:hover {
+  background: var(--issue-soft);
+  color: var(--issue);
+}
+
+/* Virtualized variant of .subnav-list: used above VIRTUALIZE_THRESHOLD
+   codes in CodeSubNav.tsx. Codes are laid out as fixed rows of
+   GRID_COLUMNS pills instead of a natural flex-wrap, since the virtualizer
+   needs a predictable row height to only render visible rows. Row height
+   here must match ROW_HEIGHT in CodeSubNav.tsx. */
+.subnav-grid-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+
+.subnav-grid-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  height: 40px;
+  box-sizing: border-box;
 }
 
 /* ---------------------------------------------------------------------- */

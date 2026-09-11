@@ -28,6 +28,17 @@ function App() {
     if (code) setActiveView('COLOR_CODE');
   }
 
+  // Deleting the currently-selected raw material clears the selection
+  // entirely rather than auto-selecting another one, so the ledger falls
+  // back to the empty-state placeholder instead of silently jumping to a
+  // different material's data.
+  function handleDeletedRawMaterial(id: number) {
+    if (selectedRawMaterial?.id === id) {
+      setSelectedRawMaterial(null);
+      setSelectedCode(null);
+    }
+  }
+
   return (
     <div className="app-shell">
       <nav className="app-nav-rail">
@@ -56,6 +67,7 @@ function App() {
           <Sidebar
             selectedRawMaterialId={selectedRawMaterial?.id ?? null}
             onSelectRawMaterial={handleSelectRawMaterial}
+            onDeletedRawMaterial={handleDeletedRawMaterial}
             refreshKey={sidebarRefreshKey}
           />
 

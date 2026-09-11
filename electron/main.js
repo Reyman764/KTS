@@ -71,13 +71,13 @@ function initDb() {
     // ------------------------------------------------------------------
     // transactions: rebuilt for the dye/knitting distribution workflow.
     //
-    // Schema note (2026-09): this replaces the earlier issue/receive/receiver
-    // ledger structure. Test data only was in this table at the time of the
-    // change, so the table is dropped and recreated rather than migrated —
-    // if you are applying this against a database with real transactions,
-    // back it up first, since this DROP is destructive.
+    // Schema note (2026-09): this replaced the earlier issue/receive/receiver
+    // ledger structure. The one-time `DROP TABLE IF EXISTS transactions` used
+    // to perform that migration has been removed — it was wiping the whole
+    // ledger on every app restart, not just once. Do not reintroduce it here;
+    // any future schema change to this table needs a real migration, not a
+    // drop-and-recreate.
     // ------------------------------------------------------------------
-    db.run('DROP TABLE IF EXISTS transactions');
 
     db.run(`
       CREATE TABLE IF NOT EXISTS transactions (
@@ -125,6 +125,87 @@ function registerIpcHandlers() {
     return getAsync('SELECT * FROM raw_materials WHERE id = ?', [result.id]);
   });
 
+  ipcMain.handle('raw-materials:update', async (_event, { id, name, unit }) => {
+    const existing = await getAsync('SELECT * FROM raw_materials WHERE id = ?', [id]);
+    if (!existing) {
+      throw new Error(`Raw material ${id} not found`);
+    }
+    await runAsync(
+      'UPDATE raw_materials SET name = ?, unit = ? WHERE id = ?',
+      [name, unit || 'kg', id]
+    );
+    return getAsync('SELECT * FROM raw_materials WHERE id = ?', [id]);
+  });
+
+  // Counts what a raw-material delete would take with it, without deleting
+  // anything. Used by the confirm dialog so the user sees real numbers before
+  // committing to a cascade.
+  ipcMain.handle('raw-materials:getDeleteImpact', async (_event, id) => {
+    const codes = await allAsync(
+      'SELECT id FROM material_codes WHERE raw_material_id = ?',
+      [id]
+    );
+    const codeIds = codes.map((c) => c.id);
+
+    const rawMaterialTxnRow = await getAsync(
+      "SELECT COUNT(*) as count FROM transactions WHERE entity_type = 'RAW_MATERIAL' AND entity_id = ?",
+      [id]
+    );
+
+    let codeTxnCount = 0;
+    if (codeIds.length > 0) {
+      const placeholders = codeIds.map(() => '?').join(',');
+      const row = await getAsync(
+        `SELECT COUNT(*) as count FROM transactions WHERE entity_type = 'COLOR_CODE' AND entity_id IN (${placeholders})`,
+        codeIds
+      );
+      codeTxnCount = row.count;
+    }
+
+    return {
+      colorCodeCount: codes.length,
+      transactionCount: rawMaterialTxnRow.count + codeTxnCount,
+    };
+  });
+
+  ipcMain.handle('raw-materials:delete', async (_event, id) => {
+    const existing = await getAsync('SELECT * FROM raw_materials WHERE id = ?', [id]);
+    if (!existing) {
+      throw new Error(`Raw material ${id} not found`);
+    }
+
+    const codes = await allAsync(
+      'SELECT id FROM material_codes WHERE raw_material_id = ?',
+      [id]
+    );
+    const codeIds = codes.map((c) => c.id);
+
+    await runAsync('BEGIN TRANSACTION');
+    try {
+      await runAsync(
+        "DELETE FROM transactions WHERE entity_type = 'RAW_MATERIAL' AND entity_id = ?",
+        [id]
+      );
+      if (codeIds.length > 0) {
+        const placeholders = codeIds.map(() => '?').join(',');
+        await runAsync(
+          `DELETE FROM transactions WHERE entity_type = 'COLOR_CODE' AND entity_id IN (${placeholders})`,
+          codeIds
+        );
+      }
+      // material_codes rows cascade via the FK, but deleting explicitly keeps
+      // this path correct even if the FK enforcement pragma is ever off.
+      await runAsync('DELETE FROM material_codes WHERE raw_material_id = ?', [id]);
+      await runAsync('DELETE FROM raw_materials WHERE id = ?', [id]);
+      await runAsync('COMMIT');
+    } catch (err) {
+      await runAsync('ROLLBACK');
+      throw err;
+    }
+
+    return { id, deleted: true };
+  });
+
   // Material Codes (Color Codes)
   ipcMain.handle('material-codes:getByRawMaterial', async (_event, rawMaterialId) => {
     return allAsync(
@@ -141,15 +222,65 @@ function registerIpcHandlers() {
     return getAsync('SELECT * FROM material_codes WHERE id = ?', [result.id]);
   });
 
+  ipcMain.handle('material-codes:update', async (_event, { id, code, description }) => {
+    const existing = await getAsync('SELECT * FROM material_codes WHERE id = ?', [id]);
+    if (!existing) {
+      throw new Error(`Material code ${id} not found`);
+    }
+    await runAsync(
+      'UPDATE material_codes SET code = ?, description = ? WHERE id = ?',
+      [code, description || null, id]
+    );
+    return getAsync('SELECT * FROM material_codes WHERE id = ?', [id]);
+  });
+
+  ipcMain.handle('material-codes:getDeleteImpact', async (_event, id) => {
+    const row = await getAsync(
+      "SELECT COUNT(*) as count FROM transactions WHERE entity_type = 'COLOR_CODE' AND entity_id = ?",
+      [id]
+    );
+    return { transactionCount: row.count };
+  });
+
+  ipcMain.handle('material-codes:delete', async (_event, id) => {
+    const existing = await getAsync('SELECT * FROM material_codes WHERE id = ?', [id]);
+    if (!existing) {
+      throw new Error(`Material code ${id} not found`);
+    }
+
+    await runAsync('BEGIN TRANSACTION');
+    try {
+      await runAsync(
+        "DELETE FROM transactions WHERE entity_type = 'COLOR_CODE' AND entity_id = ?",
+        [id]
+      );
+      await runAsync('DELETE FROM material_codes WHERE id = ?', [id]);
+      await runAsync('COMMIT');
+    } catch (err) {
+      await runAsync('ROLLBACK');
+      throw err;
+    }
+
+    return { id, deleted: true };
+  });
+
   // ---------------------------------------------------------------------------
   // Transactions
   // ---------------------------------------------------------------------------
 
   // Recompute running balances for one entity in chronological order.
-  // Called whenever an insert lands out of date order.
+  // Called whenever an insert lands out of date order, and always after an
+  // update or delete (since either can shift every balance downstream).
   //
   // Balance formula: previous balance + receive_from_dye - knitting_distribution + return_qty
   // assorted and wastage are display-only and never enter this calculation.
+  //
+  // Performance note: this wraps all row updates in a single explicit
+  // transaction. Without it, sqlite3 auto-commits each UPDATE individually,
+  // which is fine at a few hundred rows but takes tens of seconds once an
+  // entity has tens of thousands of transactions (every delete/update
+  // recalculates the whole entity, not just the rows after the change).
+  // Batching into one transaction turns that into a single commit.
   function recalcBalances(entityType, entityId) {
     return new Promise((resolve, reject) => {
       db.all(
@@ -157,16 +288,30 @@ function registerIpcHandlers() {
         [entityType, entityId],
         (err, rows) => {
           if (err) return reject(err);
-          let running = 0;
-          const stmt = db.prepare('UPDATE transactions SET balance = ? WHERE id = ?');
-          for (const row of rows) {
-            running +=
-              (row.receive_from_dye || 0) - (row.knitting_distribution || 0) + (row.return_qty || 0);
-            stmt.run(running, row.id);
-          }
-          stmt.finalize((finalizeErr) => {
-            if (finalizeErr) reject(finalizeErr);
-            else resolve();
+
+          if (rows.length === 0) return resolve();
+
+          db.serialize(() => {
+            db.run('BEGIN TRANSACTION');
+
+            const stmt = db.prepare('UPDATE transactions SET balance = ? WHERE id = ?');
+            let running = 0;
+            for (const row of rows) {
+              running +=
+                (row.receive_from_dye || 0) - (row.knitting_distribution || 0) + (row.return_qty || 0);
+              stmt.run(running, row.id);
+            }
+
+            stmt.finalize((finalizeErr) => {
+              if (finalizeErr) {
+                db.run('ROLLBACK', () => reject(finalizeErr));
+                return;
+              }
+              db.run('COMMIT', (commitErr) => {
+                if (commitErr) reject(commitErr);
+                else resolve();
+              });
+            });
           });
         }
       );
@@ -229,16 +374,18 @@ function registerIpcHandlers() {
     const assortedVal = Number(assorted) || 0;
     const wastageVal = Number(wastage) || 0;
 
-    // Is this entry chronologically after everything currently stored?
-    const latest = await getAsync(
-      'SELECT date, balance FROM transactions WHERE entity_type = ? AND entity_id = ? ORDER BY date DESC, id DESC LIMIT 1',
-      [entityType, entityId]
-    );
-
-    const isAppend = !latest || date >= latest.date;
-    const provisionalBalance =
-      (latest ? latest.balance : 0) + receiveFromDyeVal - knittingDistributionVal + returnQtyVal;
-
+    // Balance gets a placeholder on insert — the real, correct cumulative
+    // value is always computed by recalcBalances() right after, for every
+    // insert, not just backdated ones. An earlier "is this an append"
+    // shortcut tried to skip the recalc when the new row's date looked like
+    // it was already the latest, but that comparison only checked the date
+    // string (date >= latest.date) and could be true even when the insert
+    // wasn't truly last — same-day inserts, or several inserts arriving
+    // out of chronological order (e.g. the test-data seed script), could
+    // silently skip the recalc and leave every balance from that point on
+    // permanently wrong. Always recalculating removes that failure mode;
+    // recalcBalances is a single batched transaction, so the cost is small
+    // even for entities with tens of thousands of transactions.
     const result = await runAsync(
       `INSERT INTO transactions
         (entity_type, entity_id, entry_type, date, description, buyer, order_no, lot_no, rack_no,
@@ -257,18 +404,14 @@ function registerIpcHandlers() {
         receiveFromDyeVal,
         knittingDistributionVal,
         returnQtyVal,
-        provisionalBalance,
+        0,
         assortedVal,
         wastageVal,
         remark || null,
       ]
     );
 
-    // Backdated entry inserted into the middle of the ledger: every balance
-    // after it (and its own) needs recomputing, since balance is cumulative.
-    if (!isAppend) {
-      await recalcBalances(entityType, entityId);
-    }
+    await recalcBalances(entityType, entityId);
 
     return getAsync('SELECT * FROM transactions WHERE id = ?', [result.id]);
   });
