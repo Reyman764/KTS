@@ -1255,6 +1255,28 @@
   color: var(--ink);
 }
 
+.reports-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reports-page-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.fiscal-close-trigger {
+  color: var(--loss);
+  border-color: var(--loss-soft);
+}
+
+.fiscal-close-trigger:hover {
+  background: var(--loss-soft);
+  border-color: var(--loss);
+}
+
 .reports-filters {
   display: flex;
   align-items: flex-end;
@@ -1386,4 +1408,400 @@ html, body, #root {
   color: var(--ink-faint);
   font-weight: 400;
   cursor: help;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Fiscal year closure ("Balance Brought Down")                          */
+/* ---------------------------------------------------------------------- */
+
+.fiscal-close-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(32, 34, 31, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  padding: 32px;
+  animation: overlay-in var(--transition-base);
+}
+
+.fiscal-close-panel {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: 100%;
+  max-width: 760px;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modal-in var(--transition-base);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fiscal-close-overlay,
+  .fiscal-close-panel {
+    animation: none;
+  }
+}
+
+.fiscal-close-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--rule);
+  flex-shrink: 0;
+}
+
+.fiscal-close-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.fiscal-close-body {
+  padding: 20px 22px 22px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.fiscal-close-status {
+  color: var(--ink-muted);
+  font-size: 13.5px;
+  text-align: center;
+  padding: 24px 0;
+}
+
+.fiscal-close-intro {
+  font-size: 13.5px;
+  color: var(--ink);
+  line-height: 1.55;
+  margin: 0;
+}
+
+.fiscal-close-summary-cards {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.fiscal-close-summary-card {
+  flex: 1;
+  min-width: 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+}
+
+.fiscal-close-table-wrap {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.fiscal-close-empty {
+  color: var(--ink-faint);
+  font-size: 13.5px;
+  padding: 12px 2px;
+}
+
+.fiscal-close-confirm-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid var(--rule);
+  padding-top: 16px;
+}
+
+.fiscal-close-confirm-form > div {
+  margin-bottom: 8px;
+}
+
+.fiscal-close-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--loss-soft);
+  color: var(--loss);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin: 6px 0 4px;
+}
+
+.fiscal-close-warning svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.fiscal-close-running {
+  padding: 32px 0;
+}
+
+.fiscal-close-error-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: var(--issue);
+  text-align: center;
+  padding: 24px 0;
+}
+
+.fiscal-close-done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  padding: 16px 0 8px;
+}
+
+.fiscal-close-done-icon {
+  color: var(--receive);
+  margin-bottom: 6px;
+}
+
+.fiscal-close-done h3 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--ink);
+}
+
+.fiscal-close-done p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 13.5px;
+}
+
+.fiscal-close-backup-path {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  word-break: break-all;
+  margin: 4px 0 10px !important;
+}
+
+.fiscal-close-done .btn-primary {
+  margin-top: 8px;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Archive browser (past closed fiscal years, read-only)                 */
+/* ---------------------------------------------------------------------- */
+
+.archive-browser-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(32, 34, 31, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  padding: 24px;
+  animation: overlay-in var(--transition-base);
+}
+
+.archive-browser-panel {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: 100%;
+  max-width: 1100px;
+  height: 100%;
+  max-height: 720px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modal-in var(--transition-base);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .archive-browser-overlay,
+  .archive-browser-panel {
+    animation: none;
+  }
+}
+
+.archive-browser-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--rule);
+  flex-shrink: 0;
+}
+
+.archive-browser-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.archive-browser-error {
+  margin: 12px 20px 0;
+}
+
+.archive-browser-empty {
+  color: var(--ink-faint);
+  font-size: 13.5px;
+  padding: 32px 20px;
+  text-align: center;
+}
+
+.archive-browser-empty-small {
+  color: var(--ink-faint);
+  font-size: 13px;
+  padding: 16px 4px;
+}
+
+.archive-browser-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.archive-browser-column {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.archive-browser-column-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 8px;
+  padding: 0 2px;
+}
+
+.archive-browser-years {
+  width: 200px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--rule);
+  background: var(--panel);
+  gap: 3px;
+}
+
+.archive-browser-year-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  padding: 9px 10px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition-fast);
+}
+
+.archive-browser-year-item:hover {
+  background: #eae7dc;
+}
+
+.archive-browser-year-item.active {
+  background: var(--accent-soft);
+}
+
+.archive-browser-year-label {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.archive-browser-year-item.active .archive-browser-year-label {
+  color: var(--accent-hover);
+}
+
+.archive-browser-year-meta {
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+
+.archive-browser-entities {
+  width: 240px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--rule);
+  gap: 2px;
+}
+
+.archive-browser-entity-item {
+  padding: 8px 10px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.archive-browser-entity-item:hover {
+  background: var(--panel);
+}
+
+.archive-browser-entity-item.active {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  font-weight: 600;
+}
+
+.archive-browser-ledger {
+  flex: 1;
+  min-width: 0;
+}
+
+.archive-browser-ledger-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.archive-browser-readonly-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-muted);
+  background: var(--panel);
+  border: 1px solid var(--rule-strong);
+  border-radius: 10px;
+  padding: 2px 9px;
+}
+
+.archive-browser-table-wrap {
+  max-height: 100%;
+}
+
+.archive-browser-bbd-badge {
+  background: var(--receive-soft);
+  color: var(--receive);
 }

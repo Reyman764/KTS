@@ -34,4 +34,13 @@ contextBridge.exposeInMainWorld('api', {
   crossReport: {
     search: (filters) => ipcRenderer.invoke('cross-report:search', filters),
   },
+  fiscalYear: {
+    preview: () => ipcRenderer.invoke('fiscal-year:preview'),
+    close: (data) => ipcRenderer.invoke('fiscal-year:close', data),
+    list: () => ipcRenderer.invoke('fiscal-year:list'),
+    getArchivedTransactions: (params) =>
+      ipcRenderer.invoke('fiscal-year:getArchivedTransactions', params),
+    getArchivedEntities: (params) =>
+      ipcRenderer.invoke('fiscal-year:getArchivedEntities', params),
+  },
 });

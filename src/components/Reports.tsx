@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
-import { FileSpreadsheet, FileText } from 'lucide-react';
+import { FileSpreadsheet, FileText, CalendarClock, Archive } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import type { EntityType, MaterialCode, RawMaterial, ReportResult, Transaction } from '../types';
 import { rawMaterialsApi } from '../api/rawMaterials';
 import { materialCodesApi } from '../api/materialCodes';
 import { reportsApi } from '../api/reports';
+import FiscalYearClose from './FiscalYearClose';
+import ArchiveBrowser from './ArchiveBrowser';
 
 const PAGE_SIZE = 200;
 const COLUMN_COUNT = 13;
@@ -23,6 +25,8 @@ export default function Reports() {
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState<'excel' | 'pdf' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [fiscalCloseOpen, setFiscalCloseOpen] = useState(false);
+  const [archiveBrowserOpen, setArchiveBrowserOpen] = useState(false);
 
   const selectedRawMaterial = rawMaterials.find((rm) => rm.id === selectedRawMaterialId) ?? null;
   const selectedCode = codes.find((c) => c.id === selectedCodeId) ?? null;
@@ -189,7 +193,25 @@ export default function Reports() {
 
   return (
     <div className="reports-page">
-      <h2>Reports</h2>
+      <div className="reports-page-header">
+        <h2>Reports</h2>
+        <div className="reports-page-header-actions">
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => setArchiveBrowserOpen(true)}
+          >
+            <Archive size={14} /> View Archives
+          </button>
+          <button
+            type="button"
+            className="btn-secondary fiscal-close-trigger"
+            onClick={() => setFiscalCloseOpen(true)}
+          >
+            <CalendarClock size={14} /> Close Fiscal Year
+          </button>
+        </div>
+      </div>
 
       <div className="reports-filters">
         <div>
@@ -345,6 +367,9 @@ export default function Reports() {
           </div>
         </>
       )}
+
+      {fiscalCloseOpen && <FiscalYearClose onClose={() => setFiscalCloseOpen(false)} />}
+      {archiveBrowserOpen && <ArchiveBrowser onClose={() => setArchiveBrowserOpen(false)} />}
     </div>
   );
 }

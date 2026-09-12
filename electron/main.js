@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'path';
+import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import sqlite3pkg from 'sqlite3';
 
@@ -12,6 +13,7 @@ const __dirname = path.dirname(__filename);
 // Database setup
 // ---------------------------------------------------------------------------
 const dbPath = path.join(app.getPath('userData'), 'kts-wool-inventory.db');
+const backupsDir = path.join(app.getPath('userData'), 'backups');
 let db;
 
 function runAsync(sql, params = []) {
@@ -42,49 +44,194 @@ function allAsync(sql, params = []) {
 }
 
 function initDb() {
-  db = new sqlite3.Database(dbPath);
+  return new Promise((resolve, reject) => {
+    db = new sqlite3.Database(dbPath, (err) => {
+      if (err) return reject(err);
 
-  db.serialize(() => {
-    db.run('PRAGMA foreign_keys = ON');
+      db.serialize(() => {
+        db.run('PRAGMA foreign_keys = ON');
 
-    db.run(`
-      CREATE TABLE IF NOT EXISTS raw_materials (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL UNIQUE,
-        unit TEXT NOT NULL DEFAULT 'kg',
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )
-    `);
+        db.run(`
+          CREATE TABLE IF NOT EXISTS raw_materials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            unit TEXT NOT NULL DEFAULT 'kg',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+          )
+        `);
 
-    db.run(`
-      CREATE TABLE IF NOT EXISTS material_codes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        raw_material_id INTEGER NOT NULL,
-        code TEXT NOT NULL,
-        description TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        FOREIGN KEY (raw_material_id) REFERENCES raw_materials(id) ON DELETE CASCADE,
-        UNIQUE (raw_material_id, code)
-      )
-    `);
+        db.run(`
+          CREATE TABLE IF NOT EXISTS material_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            raw_material_id INTEGER NOT NULL,
+            code TEXT NOT NULL,
+            description TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (raw_material_id) REFERENCES raw_materials(id) ON DELETE CASCADE,
+            UNIQUE (raw_material_id, code)
+          )
+        `);
 
-    // ------------------------------------------------------------------
-    // transactions: rebuilt for the dye/knitting distribution workflow.
-    //
-    // Schema note (2026-09): this replaced the earlier issue/receive/receiver
-    // ledger structure. The one-time `DROP TABLE IF EXISTS transactions` used
-    // to perform that migration has been removed — it was wiping the whole
-    // ledger on every app restart, not just once. Do not reintroduce it here;
-    // any future schema change to this table needs a real migration, not a
-    // drop-and-recreate.
-    // ------------------------------------------------------------------
+        // ------------------------------------------------------------------
+        // transactions: rebuilt for the dye/knitting distribution workflow.
+        //
+        // Schema note (2026-09): this replaced the earlier issue/receive/
+        // receiver ledger structure. The one-time `DROP TABLE IF EXISTS
+        // transactions` used to perform that migration has been removed —
+        // it was wiping the whole ledger on every app restart, not just
+        // once. Do not reintroduce it here; any future schema change to
+        // this table needs a real migration, not a drop-and-recreate.
+        //
+        // Schema note (2026-09, fiscal year closure): entry_type gained
+        // 'BALANCE_BROUGHT_DOWN' for the opening row a year-end closure
+        // inserts. CREATE TABLE IF NOT EXISTS only applies this constraint
+        // to brand-new databases — existing databases are migrated by
+        // migrateEntryTypeConstraint(), run once after this function
+        // resolves.
+        // ------------------------------------------------------------------
+        db.run(`
+          CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL CHECK (entity_type IN ('RAW_MATERIAL', 'COLOR_CODE')),
+            entity_id INTEGER NOT NULL,
+            entry_type TEXT NOT NULL DEFAULT 'NORMAL' CHECK (entry_type IN ('NORMAL', 'DRYING_LOSS', 'AUDIT_ADJUSTMENT', 'BALANCE_BROUGHT_DOWN')),
+            date TEXT NOT NULL,
+            description TEXT,
+            buyer TEXT,
+            order_no TEXT,
+            lot_no TEXT,
+            rack_no TEXT,
+            receive_from_dye REAL NOT NULL DEFAULT 0,
+            knitting_distribution REAL NOT NULL DEFAULT 0,
+            return_qty REAL NOT NULL DEFAULT 0,
+            balance REAL NOT NULL DEFAULT 0,
+            assorted REAL NOT NULL DEFAULT 0,
+            wastage REAL NOT NULL DEFAULT 0,
+            remark TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+          )
+        `);
 
-    db.run(`
-      CREATE TABLE IF NOT EXISTS transactions (
+        db.run('CREATE INDEX IF NOT EXISTS idx_codes_raw_material ON material_codes(raw_material_id)');
+        db.run('CREATE INDEX IF NOT EXISTS idx_txn_entity ON transactions(entity_type, entity_id)');
+        db.run('CREATE INDEX IF NOT EXISTS idx_txn_date ON transactions(date)');
+
+        // ------------------------------------------------------------------
+        // quick_options: saved values for the Description / Buyer / Rack No
+        // / Lot No / Order No combo-box fields on the ledger entry form, so
+        // repeated values can be picked instead of retyped (avoiding typos
+        // on names that recur constantly, like buyer or rack). Shared
+        // globally across all raw materials and color codes, not scoped
+        // per entity. `field` identifies which form field a value belongs
+        // to.
+        // ------------------------------------------------------------------
+        db.run(`
+          CREATE TABLE IF NOT EXISTS quick_options (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            field TEXT NOT NULL CHECK (field IN ('description', 'buyer', 'rack_no', 'lot_no', 'order_no')),
+            value TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (field, value)
+          )
+        `);
+
+        db.run('CREATE INDEX IF NOT EXISTS idx_quick_options_field ON quick_options(field)');
+
+        // ------------------------------------------------------------------
+        // Fiscal year closure ("Balance Brought Down"): once a year, every
+        // raw material and color code's transaction history for that year
+        // is moved out of the live `transactions` table into
+        // `archived_transactions` (frozen, read-only record), and the live
+        // table is left with exactly one new opening row per entity
+        // carrying its ending balance forward — mirroring how a physical
+        // ledger book closes one year's pages and starts a fresh page next
+        // year headed "Balance Brought Down".
+        // ------------------------------------------------------------------
+        db.run(`
+          CREATE TABLE IF NOT EXISTS fiscal_year_closures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            label TEXT NOT NULL,
+            closed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            entity_count INTEGER NOT NULL DEFAULT 0,
+            transaction_count INTEGER NOT NULL DEFAULT 0,
+            backup_path TEXT
+          )
+        `);
+
+        // Same shape as `transactions`, plus which closure archived the
+        // row and under what fiscal year label — deliberately NOT
+        // foreign-keyed to raw_materials/material_codes with ON DELETE
+        // CASCADE, since archived history must survive even if the live
+        // entity is later deleted.
+        db.run(`
+          CREATE TABLE IF NOT EXISTS archived_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            closure_id INTEGER NOT NULL,
+            fiscal_year_label TEXT NOT NULL,
+            original_transaction_id INTEGER,
+            entity_type TEXT NOT NULL CHECK (entity_type IN ('RAW_MATERIAL', 'COLOR_CODE')),
+            entity_id INTEGER NOT NULL,
+            entry_type TEXT NOT NULL,
+            date TEXT NOT NULL,
+            description TEXT,
+            buyer TEXT,
+            order_no TEXT,
+            lot_no TEXT,
+            rack_no TEXT,
+            receive_from_dye REAL NOT NULL DEFAULT 0,
+            knitting_distribution REAL NOT NULL DEFAULT 0,
+            return_qty REAL NOT NULL DEFAULT 0,
+            balance REAL NOT NULL DEFAULT 0,
+            assorted REAL NOT NULL DEFAULT 0,
+            wastage REAL NOT NULL DEFAULT 0,
+            remark TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (closure_id) REFERENCES fiscal_year_closures(id)
+          )
+        `);
+
+        db.run('CREATE INDEX IF NOT EXISTS idx_archived_entity ON archived_transactions(entity_type, entity_id)');
+        db.run('CREATE INDEX IF NOT EXISTS idx_archived_closure ON archived_transactions(closure_id)');
+        db.run('CREATE INDEX IF NOT EXISTS idx_archived_fiscal_year ON archived_transactions(fiscal_year_label)');
+
+        // Completion marker: db.serialize() queues sqlite3 callback-style
+        // statements in order on this connection, so by the time THIS
+        // statement's callback fires, every CREATE TABLE/INDEX above has
+        // already completed. That's the signal that it's safe to run the
+        // async migration next.
+        db.run('SELECT 1', (selectErr) => {
+          if (selectErr) return reject(selectErr);
+          resolve();
+        });
+      });
+    });
+  });
+}
+
+// One-time migration for databases created before 'BALANCE_BROUGHT_DOWN'
+// was added to the entry_type CHECK constraint. SQLite can't ALTER a CHECK
+// constraint directly, so this rebuilds the table: create a new table with
+// the updated constraint, copy every row across, drop the old table, rename
+// the new one into place. Safe to run on every startup — it checks whether
+// the constraint already allows the new value first, and does nothing if so.
+async function migrateEntryTypeConstraint() {
+  const tableInfo = await getAsync(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transactions'"
+  );
+  if (!tableInfo || tableInfo.sql.includes('BALANCE_BROUGHT_DOWN')) {
+    return; // brand-new DB (already correct) or migration already applied
+  }
+
+  console.log('Migrating transactions table to allow BALANCE_BROUGHT_DOWN entries...');
+
+  await runAsync('BEGIN TRANSACTION');
+  try {
+    await runAsync(`
+      CREATE TABLE transactions_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         entity_type TEXT NOT NULL CHECK (entity_type IN ('RAW_MATERIAL', 'COLOR_CODE')),
         entity_id INTEGER NOT NULL,
-        entry_type TEXT NOT NULL DEFAULT 'NORMAL' CHECK (entry_type IN ('NORMAL', 'DRYING_LOSS', 'AUDIT_ADJUSTMENT')),
+        entry_type TEXT NOT NULL DEFAULT 'NORMAL' CHECK (entry_type IN ('NORMAL', 'DRYING_LOSS', 'AUDIT_ADJUSTMENT', 'BALANCE_BROUGHT_DOWN')),
         date TEXT NOT NULL,
         description TEXT,
         buyer TEXT,
@@ -101,31 +248,23 @@ function initDb() {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
-
-    db.run('CREATE INDEX IF NOT EXISTS idx_codes_raw_material ON material_codes(raw_material_id)');
-    db.run('CREATE INDEX IF NOT EXISTS idx_txn_entity ON transactions(entity_type, entity_id)');
-    db.run('CREATE INDEX IF NOT EXISTS idx_txn_date ON transactions(date)');
-
-    // ------------------------------------------------------------------
-    // quick_options: saved values for the Description / Buyer / Rack No /
-    // Lot No / Order No combo-box fields on the ledger entry form, so
-    // repeated values can be picked instead of retyped (avoiding typos on
-    // names that recur constantly, like buyer or rack). Shared globally
-    // across all raw materials and color codes, not scoped per entity.
-    // `field` identifies which form field a value belongs to.
-    // ------------------------------------------------------------------
-    db.run(`
-      CREATE TABLE IF NOT EXISTS quick_options (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        field TEXT NOT NULL CHECK (field IN ('description', 'buyer', 'rack_no', 'lot_no', 'order_no')),
-        value TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        UNIQUE (field, value)
-      )
+    await runAsync(`
+      INSERT INTO transactions_new
+      SELECT id, entity_type, entity_id, entry_type, date, description, buyer, order_no, lot_no,
+             rack_no, receive_from_dye, knitting_distribution, return_qty, balance, assorted,
+             wastage, remark, created_at
+      FROM transactions
     `);
-
-    db.run('CREATE INDEX IF NOT EXISTS idx_quick_options_field ON quick_options(field)');
-  });
+    await runAsync('DROP TABLE transactions');
+    await runAsync('ALTER TABLE transactions_new RENAME TO transactions');
+    await runAsync('CREATE INDEX IF NOT EXISTS idx_txn_entity ON transactions(entity_type, entity_id)');
+    await runAsync('CREATE INDEX IF NOT EXISTS idx_txn_date ON transactions(date)');
+    await runAsync('COMMIT');
+    console.log('Migration complete.');
+  } catch (err) {
+    await runAsync('ROLLBACK');
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -811,6 +950,263 @@ function registerIpcHandlers() {
 
     return { groups, grandTotal, matchedTransactionCount: matches.length };
   });
+
+  // ---------------------------------------------------------------------------
+  // Fiscal year closure ("Balance Brought Down")
+  // ---------------------------------------------------------------------------
+
+  // Dry run — no writes. Returns every raw material's and color code's
+  // current balance and transaction count, so a confirmation screen can show
+  // exactly what closing the year would do before anything is touched.
+  ipcMain.handle('fiscal-year:preview', async () => {
+    const rawMaterials = await allAsync('SELECT id, name, unit FROM raw_materials ORDER BY name ASC');
+    const colorCodes = await allAsync(`
+      SELECT mc.id, mc.code, rm.name as raw_material_name, rm.unit as unit
+      FROM material_codes mc
+      JOIN raw_materials rm ON rm.id = mc.raw_material_id
+      ORDER BY rm.name ASC, mc.code ASC
+    `);
+
+    const entities = [];
+
+    for (const rm of rawMaterials) {
+      const summary = await getEntityClosureSummary('RAW_MATERIAL', rm.id);
+      entities.push({
+        entityType: 'RAW_MATERIAL',
+        entityId: rm.id,
+        label: rm.name,
+        unit: rm.unit,
+        currentBalance: summary.balance,
+        transactionCount: summary.count,
+      });
+    }
+
+    for (const cc of colorCodes) {
+      const summary = await getEntityClosureSummary('COLOR_CODE', cc.id);
+      entities.push({
+        entityType: 'COLOR_CODE',
+        entityId: cc.id,
+        label: `${cc.raw_material_name} — ${cc.code}`,
+        unit: cc.unit,
+        currentBalance: summary.balance,
+        transactionCount: summary.count,
+      });
+    }
+
+    const touchedEntities = entities.filter((e) => e.transactionCount > 0);
+
+    return {
+      totalEntities: entities.length,
+      entitiesWithTransactions: touchedEntities.length,
+      totalTransactionCount: touchedEntities.reduce((sum, e) => sum + e.transactionCount, 0),
+      entities,
+    };
+  });
+
+  async function getEntityClosureSummary(entityType, entityId) {
+    const countRow = await getAsync(
+      'SELECT COUNT(*) as count FROM transactions WHERE entity_type = ? AND entity_id = ?',
+      [entityType, entityId]
+    );
+    const latest = await getAsync(
+      'SELECT balance FROM transactions WHERE entity_type = ? AND entity_id = ? ORDER BY date DESC, id DESC LIMIT 1',
+      [entityType, entityId]
+    );
+    return { count: countRow.count, balance: latest ? latest.balance : 0 };
+  }
+
+  // The real operation. Backs up the database file first — if that fails,
+  // aborts before any data is touched. Then, in one SQL transaction: every
+  // entity's rows for the year are copied into archived_transactions,
+  // deleted from the live table, and (for entities that had any activity)
+  // replaced with a single BALANCE_BROUGHT_DOWN row carrying the ending
+  // balance forward as the new year's opening balance. All-or-nothing —
+  // if anything throws partway through, the whole closure rolls back and
+  // the live table is left exactly as it was.
+  ipcMain.handle('fiscal-year:close', async (_event, { label, openingDate }) => {
+    const trimmedLabel = (label || '').trim();
+    if (!trimmedLabel) {
+      throw new Error('A fiscal year label is required');
+    }
+    if (!openingDate) {
+      throw new Error('An opening date for the new year is required');
+    }
+
+    const backupPath = await backupDatabaseFile(trimmedLabel);
+
+    const rawMaterials = await allAsync('SELECT id FROM raw_materials');
+    const colorCodes = await allAsync('SELECT id FROM material_codes');
+    const allEntities = [
+      ...rawMaterials.map((r) => ({ entityType: 'RAW_MATERIAL', entityId: r.id })),
+      ...colorCodes.map((c) => ({ entityType: 'COLOR_CODE', entityId: c.id })),
+    ];
+
+    await runAsync('BEGIN TRANSACTION');
+
+    try {
+      const closureResult = await runAsync(
+        'INSERT INTO fiscal_year_closures (label, backup_path) VALUES (?, ?)',
+        [trimmedLabel, backupPath]
+      );
+      const closureId = closureResult.id;
+
+      let entityCount = 0;
+      let transactionCount = 0;
+
+      for (const { entityType, entityId } of allEntities) {
+        const rows = await allAsync(
+          'SELECT * FROM transactions WHERE entity_type = ? AND entity_id = ? ORDER BY date ASC, id ASC',
+          [entityType, entityId]
+        );
+
+        if (rows.length === 0) {
+          // Nothing ever recorded against this entity — nothing to archive,
+          // nothing to bring down. Leave it untouched.
+          continue;
+        }
+
+        const endingBalance = rows[rows.length - 1].balance;
+
+        for (const row of rows) {
+          await runAsync(
+            `INSERT INTO archived_transactions
+              (closure_id, fiscal_year_label, original_transaction_id, entity_type, entity_id, entry_type,
+               date, description, buyer, order_no, lot_no, rack_no, receive_from_dye,
+               knitting_distribution, return_qty, balance, assorted, wastage, remark, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              closureId, trimmedLabel, row.id, row.entity_type, row.entity_id, row.entry_type,
+              row.date, row.description, row.buyer, row.order_no, row.lot_no, row.rack_no,
+              row.receive_from_dye, row.knitting_distribution, row.return_qty, row.balance,
+              row.assorted, row.wastage, row.remark, row.created_at,
+            ]
+          );
+        }
+
+        await runAsync(
+          'DELETE FROM transactions WHERE entity_type = ? AND entity_id = ?',
+          [entityType, entityId]
+        );
+
+        // Opening entry for the new year — the "Balance Brought Down" row.
+        // Modeled as a receive_from_dye equal to the prior balance so the
+        // running balance formula (prev + receive - knitting + return)
+        // continues correctly from zero with no special-casing elsewhere
+        // in the app.
+        await runAsync(
+          `INSERT INTO transactions
+            (entity_type, entity_id, entry_type, date, description, receive_from_dye,
+             knitting_distribution, return_qty, balance, assorted, wastage)
+           VALUES (?, ?, 'BALANCE_BROUGHT_DOWN', ?, 'Balance Brought Down', ?, 0, 0, ?, 0, 0)`,
+          [entityType, entityId, openingDate, endingBalance, endingBalance]
+        );
+
+        entityCount += 1;
+        transactionCount += rows.length;
+      }
+
+      await runAsync(
+        'UPDATE fiscal_year_closures SET entity_count = ?, transaction_count = ? WHERE id = ?',
+        [entityCount, transactionCount, closureId]
+      );
+
+      await runAsync('COMMIT');
+
+      return {
+        closureId,
+        label: trimmedLabel,
+        entityCount,
+        transactionCount,
+        backupPath,
+      };
+    } catch (err) {
+      await runAsync('ROLLBACK');
+      throw err;
+    }
+  });
+
+  ipcMain.handle('fiscal-year:list', async () => {
+    return allAsync('SELECT * FROM fiscal_year_closures ORDER BY closed_at DESC');
+  });
+
+  // Read-only: one entity's frozen transactions for one past fiscal year.
+  ipcMain.handle('fiscal-year:getArchivedTransactions', async (_event, { entityType, entityId, fiscalYearLabel }) => {
+    return allAsync(
+      `SELECT * FROM archived_transactions
+       WHERE entity_type = ? AND entity_id = ? AND fiscal_year_label = ?
+       ORDER BY date ASC, id ASC`,
+      [entityType, entityId, fiscalYearLabel]
+    );
+  });
+
+  // Which raw materials / color codes actually have archived data for a
+  // given past fiscal year — feeds the archive browser's material/code
+  // picker, since a given year may not have touched every entity that
+  // exists today (and an entity may since have been deleted, in which case
+  // its archived history still exists but the label falls back to a
+  // "(deleted)" placeholder rather than joining to a live row).
+  ipcMain.handle('fiscal-year:getArchivedEntities', async (_event, { fiscalYearLabel }) => {
+    const distinctEntities = await allAsync(
+      `SELECT DISTINCT entity_type, entity_id FROM archived_transactions WHERE fiscal_year_label = ?`,
+      [fiscalYearLabel]
+    );
+
+    if (distinctEntities.length === 0) return [];
+
+    const rawMaterialIds = distinctEntities
+      .filter((e) => e.entity_type === 'RAW_MATERIAL')
+      .map((e) => e.entity_id);
+    const colorCodeIds = distinctEntities
+      .filter((e) => e.entity_type === 'COLOR_CODE')
+      .map((e) => e.entity_id);
+
+    const rawMaterialRows = rawMaterialIds.length
+      ? await allAsync(
+          `SELECT id, name, unit FROM raw_materials WHERE id IN (${rawMaterialIds.map(() => '?').join(',')})`,
+          rawMaterialIds
+        )
+      : [];
+    const colorCodeRows = colorCodeIds.length
+      ? await allAsync(
+          `SELECT mc.id, mc.code, rm.name as raw_material_name, rm.unit as unit
+           FROM material_codes mc
+           JOIN raw_materials rm ON rm.id = mc.raw_material_id
+           WHERE mc.id IN (${colorCodeIds.map(() => '?').join(',')})`,
+          colorCodeIds
+        )
+      : [];
+
+    const rawMaterialById = new Map(rawMaterialRows.map((r) => [r.id, r]));
+    const colorCodeById = new Map(colorCodeRows.map((r) => [r.id, r]));
+
+    return distinctEntities.map((e) => {
+      if (e.entity_type === 'RAW_MATERIAL') {
+        const rm = rawMaterialById.get(e.entity_id);
+        return {
+          entityType: 'RAW_MATERIAL',
+          entityId: e.entity_id,
+          label: rm ? rm.name : `Raw material #${e.entity_id} (deleted)`,
+          unit: rm ? rm.unit : 'kg',
+        };
+      }
+      const cc = colorCodeById.get(e.entity_id);
+      return {
+        entityType: 'COLOR_CODE',
+        entityId: e.entity_id,
+        label: cc ? `${cc.raw_material_name} — ${cc.code}` : `Color code #${e.entity_id} (deleted)`,
+        unit: cc ? cc.unit : 'kg',
+      };
+    }).sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
+  });
+
+  async function backupDatabaseFile(label) {
+    await fs.mkdir(backupsDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeLabel = label.replace(/[^a-zA-Z0-9-_]+/g, '_');
+    const backupPath = path.join(backupsDir, `kts-wool-inventory-${safeLabel}-${timestamp}.db`);
+    await fs.copyFile(dbPath, backupPath);
+    return backupPath;
+  }
 }
 
 function emptyReportTotals() {
@@ -850,8 +1246,16 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
-  initDb();
+app.whenReady().then(async () => {
+  try {
+    await initDb();
+    await migrateEntryTypeConstraint();
+  } catch (err) {
+    console.error('Failed to initialize database:', err);
+    app.quit();
+    return;
+  }
+
   registerIpcHandlers();
   createWindow();
 

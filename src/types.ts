@@ -14,7 +14,7 @@ export interface MaterialCode {
 }
 
 export type EntityType = 'RAW_MATERIAL' | 'COLOR_CODE';
-export type EntryType = 'NORMAL' | 'DRYING_LOSS' | 'AUDIT_ADJUSTMENT';
+export type EntryType = 'NORMAL' | 'DRYING_LOSS' | 'AUDIT_ADJUSTMENT' | 'BALANCE_BROUGHT_DOWN';
 
 export interface Transaction {
   id: number;
@@ -170,6 +170,60 @@ export interface CrossReportResult {
   matchedTransactionCount: number;
 }
 
+// Fiscal year closure ("Balance Brought Down") — see main.js for the full
+// operation. Preview is a dry run (no writes); close performs the real
+// archive-and-carry-forward operation for every raw material and color
+// code that has any transaction history.
+export interface FiscalYearPreviewEntity {
+  entityType: EntityType;
+  entityId: number;
+  label: string;
+  unit: string;
+  currentBalance: number;
+  transactionCount: number;
+}
+
+export interface FiscalYearPreview {
+  totalEntities: number;
+  entitiesWithTransactions: number;
+  totalTransactionCount: number;
+  entities: FiscalYearPreviewEntity[];
+}
+
+export interface FiscalYearCloseResult {
+  closureId: number;
+  label: string;
+  entityCount: number;
+  transactionCount: number;
+  backupPath: string;
+}
+
+export interface FiscalYearClosure {
+  id: number;
+  label: string;
+  closed_at: string;
+  entity_count: number;
+  transaction_count: number;
+  backup_path: string | null;
+}
+
+// Same shape as Transaction, but with the extra fields archived_transactions
+// carries (which closure archived it, under which fiscal year label).
+export interface ArchivedTransaction extends Transaction {
+  closure_id: number;
+  fiscal_year_label: string;
+  original_transaction_id: number | null;
+}
+
+// One raw material or color code that has archived data for a given past
+// fiscal year — feeds the archive browser's picker.
+export interface ArchivedEntity {
+  entityType: EntityType;
+  entityId: number;
+  label: string;
+  unit: string;
+}
+
 declare global {
   interface Window {
     api: {
@@ -208,6 +262,17 @@ declare global {
       };
       crossReport: {
         search: (filters: CrossReportFilters) => Promise<CrossReportResult>;
+      };
+      fiscalYear: {
+        preview: () => Promise<FiscalYearPreview>;
+        close: (data: { label: string; openingDate: string }) => Promise<FiscalYearCloseResult>;
+        list: () => Promise<FiscalYearClosure[]>;
+        getArchivedTransactions: (params: {
+          entityType: EntityType;
+          entityId: number;
+          fiscalYearLabel: string;
+        }) => Promise<ArchivedTransaction[]>;
+        getArchivedEntities: (params: { fiscalYearLabel: string }) => Promise<ArchivedEntity[]>;
       };
     };
   }
