@@ -1371,6 +1371,21 @@ html, body, #root {
   box-sizing: border-box;
 }
 
+/* Browsers apply their own native UI font to form controls (button, input,
+   select, textarea) by default, ignoring an ancestor's font-family unless
+   explicitly told to inherit it. Every list row, pill, and action icon in
+   this app is a <button> for accessibility/click-target reasons, so without
+   this reset they were silently rendering in the OS's default control font
+   (Arial on this Windows setup) instead of the app's intended font stack —
+   visually inconsistent with surrounding <span>/<div> text using the same
+   class, especially at this app's tight letter-spacing and line-height. */
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
 .reports-row-count {
   font-size: 12px;
   color: var(--ink-muted);
@@ -1408,6 +1423,11 @@ html, body, #root {
   color: var(--ink-faint);
   font-weight: 400;
   cursor: help;
+}
+
+.cross-report-year-badge {
+  color: var(--accent-hover);
+  font-weight: 600;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1619,9 +1639,9 @@ html, body, #root {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   width: 100%;
-  max-width: 1100px;
+  max-width: 1360px;
   height: 100%;
-  max-height: 720px;
+  max-height: 800px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1708,6 +1728,8 @@ html, body, #root {
   flex-direction: column;
   gap: 2px;
   align-items: flex-start;
+  width: 100%;
+  box-sizing: border-box;
   padding: 9px 10px;
   border: none;
   background: none;
@@ -1729,6 +1751,10 @@ html, body, #root {
   font-size: 13.5px;
   font-weight: 600;
   color: var(--ink);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .archive-browser-year-item.active .archive-browser-year-label {
@@ -1741,25 +1767,39 @@ html, body, #root {
 }
 
 .archive-browser-entities {
-  width: 240px;
+  width: 480px;
   flex-shrink: 0;
   border-right: 1px solid var(--rule);
   gap: 2px;
+  /* Overridden to not scroll itself when it contains the virtualized tree
+     (.archive-browser-tree-virtual owns scrolling in that case) — the
+     plain (non-virtualized) path still relies on this column's own
+     overflow-y: auto from .archive-browser-column, so this is only
+     neutralized when a fixed-height virtual scroller is the direct child. */
+  min-height: 0;
+}
+
+.archive-browser-entities:has(.archive-browser-tree-virtual) {
+  overflow-y: hidden;
 }
 
 .archive-browser-entity-item {
-  padding: 8px 10px;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 12px;
+  line-height: 1.6;
   border: none;
   background: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
   text-align: left;
-  font-size: 13px;
+  font-size: 13.5px;
   color: var(--ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition: background var(--transition-fast);
 }
 
 .archive-browser-entity-item:hover {
@@ -1770,6 +1810,108 @@ html, body, #root {
   background: var(--accent-soft);
   color: var(--accent-hover);
   font-weight: 600;
+}
+
+.archive-browser-group {
+  margin-bottom: 1px;
+}
+
+.archive-browser-group-header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.archive-browser-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.archive-browser-group-toggle:hover {
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.archive-browser-group-toggle-spacer {
+  width: 22px;
+  flex-shrink: 0;
+}
+
+.archive-browser-group-name {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.archive-browser-group-name-disabled {
+  cursor: default;
+  color: var(--ink-muted);
+}
+
+.archive-browser-group-name-disabled:hover {
+  background: none;
+}
+
+.archive-browser-group-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  background: var(--panel);
+  border: 1px solid var(--rule-strong);
+  border-radius: 10px;
+  padding: 1px 7px;
+  flex-shrink: 0;
+}
+
+.archive-browser-group-codes {
+  display: flex;
+  flex-direction: column;
+  padding-left: 22px;
+  border-left: 1px solid var(--rule);
+  margin-left: 11px;
+}
+
+.archive-browser-code-item {
+  font-size: 12.5px;
+}
+
+/* Plain (non-virtualized) tree container — used below VIRTUALIZE_THRESHOLD
+   in ArchiveBrowser.tsx, where rows can size to their natural content
+   height since there's no positioning math depending on a fixed height. */
+.archive-browser-tree-plain {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* Virtualized tree container — used above VIRTUALIZE_THRESHOLD. Row heights
+   are measured dynamically by the virtualizer (measureElement), so rows keep
+   their natural content height here and do NOT need to be forced to a fixed
+   pixel height — a hardcoded height that disagreed with the real rendered
+   height was previously causing janky scrolling. */
+.archive-browser-tree-virtual {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.archive-browser-tree-virtual .archive-browser-group-codes,
+.archive-browser-tree-virtual .archive-browser-code-row {
+  margin: 0;
+  padding-left: 22px;
+  border-left: none;
 }
 
 .archive-browser-ledger {
@@ -1799,6 +1941,11 @@ html, body, #root {
 
 .archive-browser-table-wrap {
   max-height: 100%;
+}
+
+.archive-browser-pagination {
+  margin-top: 12px;
+  flex-shrink: 0;
 }
 
 .archive-browser-bbd-badge {

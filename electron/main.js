@@ -193,6 +193,11 @@ function initDb() {
         db.run('CREATE INDEX IF NOT EXISTS idx_archived_entity ON archived_transactions(entity_type, entity_id)');
         db.run('CREATE INDEX IF NOT EXISTS idx_archived_closure ON archived_transactions(closure_id)');
         db.run('CREATE INDEX IF NOT EXISTS idx_archived_fiscal_year ON archived_transactions(fiscal_year_label)');
+        // Composite index matching the archive viewer's paginated lookup
+        // (entity + fiscal year, ordered by date) — without this, paging
+        // through a bulk material's tens of thousands of archived rows
+        // can't use a single index and stays slow.
+        db.run('CREATE INDEX IF NOT EXISTS idx_archived_entity_year_date ON archived_transactions(entity_type, entity_id, fiscal_year_label, date)');
 
         // Completion marker: db.serialize() queues sqlite3 callback-style
         // statements in order on this connection, so by the time THIS
@@ -783,7 +788,10 @@ function registerIpcHandlers() {
   // matched — mirrors a physical ledger book's "customer summary" page.
   // ---------------------------------------------------------------------------
   ipcMain.handle('cross-report:search', async (_event, filters) => {
-    const { description, buyer, orderNo, lotNo, rackNo, startDate, endDate } = filters || {};
+    const {
+      description, buyer, orderNo, lotNo, rackNo, startDate, endDate, fiscalYearLabel,
+      rawMaterialId, colorCodeId,
+    } = filters || {};
 
     const conditions = [];
     const params = [];
@@ -816,24 +824,62 @@ function registerIpcHandlers() {
       conditions.push('date <= ?');
       params.push(endDate);
     }
+    // A specific color code — restrict to exactly that entity.
+    if (colorCodeId) {
+      conditions.push('(entity_type = ? AND entity_id = ?)');
+      params.push('COLOR_CODE', colorCodeId);
+    } else if (rawMaterialId) {
+      // A raw material — include its own bulk entries AND every one of its
+      // color codes, since "this raw material" naturally includes the
+      // variants under it, matching how the live ledger treats a raw
+      // material as the parent of its codes.
+      const codeRows = await allAsync(
+        'SELECT id FROM material_codes WHERE raw_material_id = ?',
+        [rawMaterialId]
+      );
+      const codeIds = codeRows.map((r) => r.id);
+      if (codeIds.length > 0) {
+        const placeholders = codeIds.map(() => '?').join(',');
+        conditions.push(
+          `((entity_type = ? AND entity_id = ?) OR (entity_type = 'COLOR_CODE' AND entity_id IN (${placeholders})))`
+        );
+        params.push('RAW_MATERIAL', rawMaterialId, ...codeIds);
+      } else {
+        conditions.push('(entity_type = ? AND entity_id = ?)');
+        params.push('RAW_MATERIAL', rawMaterialId);
+      }
+    }
 
     // No filters supplied at all — refuse rather than dump every transaction
     // in the database into one report.
     if (conditions.length === 0) {
-      return { groups: [], grandTotal: emptyReportTotals(), matchedTransactionCount: 0 };
+      return { groups: [], grandTotal: emptyReportTotals(), matchedTransactionCount: 0, fiscalYearLabel: fiscalYearLabel || null };
     }
 
-    const where = `WHERE ${conditions.join(' AND ')}`;
+    // Searching a specific closed fiscal year queries the frozen archive
+    // instead of the live ledger — the two are never combined, since a
+    // closed year is a separate, complete record on its own (mixing it with
+    // live data would double count the carried-forward balance). Leaving
+    // fiscalYearLabel empty (the default) searches the live ledger, exactly
+    // as before.
+    const searchingArchive = Boolean(fiscalYearLabel);
+    const sourceTable = searchingArchive ? 'archived_transactions' : 'transactions';
+    const archiveConditions = searchingArchive
+      ? [...conditions, 'fiscal_year_label = ?']
+      : conditions;
+    const archiveParams = searchingArchive ? [...params, fiscalYearLabel] : params;
+
+    const where = `WHERE ${archiveConditions.join(' AND ')}`;
 
     const matches = await allAsync(
       `SELECT entity_type, entity_id, entry_type, receive_from_dye, knitting_distribution,
               return_qty, assorted, wastage
-       FROM transactions ${where}`,
-      params
+       FROM ${sourceTable} ${where}`,
+      archiveParams
     );
 
     if (matches.length === 0) {
-      return { groups: [], grandTotal: emptyReportTotals(), matchedTransactionCount: 0 };
+      return { groups: [], grandTotal: emptyReportTotals(), matchedTransactionCount: 0, fiscalYearLabel: fiscalYearLabel || null };
     }
 
     // Group in JS rather than SQL GROUP BY, since each group also needs a
@@ -900,14 +946,33 @@ function registerIpcHandlers() {
     // acceptable here since group counts are small relative to total
     // transaction volume (a search result is a handful to a few dozen
     // entities, not thousands).
+    // For a live search, each entity's real current balance is its latest
+    // transaction's stored balance across its FULL history — not derived
+    // from the filtered/matched rows above, since those are only a subset
+    // (e.g. just this buyer's entries) and summing a subset of movements
+    // would not equal the entity's actual stock level. For an archived-year
+    // search, the equivalent meaningful number is that entity's ENDING
+    // balance for that specific year (its last archived row for the label),
+    // not today's live balance, since the two can differ once further years
+    // have been closed since.
     const balanceByKey = new Map();
     for (const group of groupMap.values()) {
       const key = `${group.entityType}:${group.entityId}`;
-      const latest = await getAsync(
-        'SELECT balance FROM transactions WHERE entity_type = ? AND entity_id = ? ORDER BY date DESC, id DESC LIMIT 1',
-        [group.entityType, group.entityId]
-      );
-      balanceByKey.set(key, latest ? latest.balance : 0);
+      if (searchingArchive) {
+        const latestArchived = await getAsync(
+          `SELECT balance FROM archived_transactions
+           WHERE entity_type = ? AND entity_id = ? AND fiscal_year_label = ?
+           ORDER BY date DESC, id DESC LIMIT 1`,
+          [group.entityType, group.entityId, fiscalYearLabel]
+        );
+        balanceByKey.set(key, latestArchived ? latestArchived.balance : 0);
+      } else {
+        const latest = await getAsync(
+          'SELECT balance FROM transactions WHERE entity_type = ? AND entity_id = ? ORDER BY date DESC, id DESC LIMIT 1',
+          [group.entityType, group.entityId]
+        );
+        balanceByKey.set(key, latest ? latest.balance : 0);
+      }
     }
 
     const grandTotal = emptyReportTotals();
@@ -948,7 +1013,12 @@ function registerIpcHandlers() {
     // arbitrary map-iteration order.
     groups.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
 
-    return { groups, grandTotal, matchedTransactionCount: matches.length };
+    return {
+      groups,
+      grandTotal,
+      matchedTransactionCount: matches.length,
+      fiscalYearLabel: fiscalYearLabel || null,
+    };
   });
 
   // ---------------------------------------------------------------------------
@@ -1130,13 +1200,29 @@ function registerIpcHandlers() {
   });
 
   // Read-only: one entity's frozen transactions for one past fiscal year.
-  ipcMain.handle('fiscal-year:getArchivedTransactions', async (_event, { entityType, entityId, fiscalYearLabel }) => {
-    return allAsync(
-      `SELECT * FROM archived_transactions
-       WHERE entity_type = ? AND entity_id = ? AND fiscal_year_label = ?
-       ORDER BY date ASC, id ASC`,
+  // Paginated — a bulk raw material can easily have tens of thousands of
+  // archived rows for a single year, and loading/rendering them all at once
+  // froze the archive viewer for several seconds. Mirrors the live ledger's
+  // pagination approach (transactions:getByEntity).
+  ipcMain.handle('fiscal-year:getArchivedTransactions', async (_event, { entityType, entityId, fiscalYearLabel, page, pageSize }) => {
+    const limit = pageSize || 100;
+    const offset = ((page || 1) - 1) * limit;
+
+    const totalRow = await getAsync(
+      `SELECT COUNT(*) as count FROM archived_transactions
+       WHERE entity_type = ? AND entity_id = ? AND fiscal_year_label = ?`,
       [entityType, entityId, fiscalYearLabel]
     );
+
+    const rows = await allAsync(
+      `SELECT * FROM archived_transactions
+       WHERE entity_type = ? AND entity_id = ? AND fiscal_year_label = ?
+       ORDER BY date ASC, id ASC
+       LIMIT ? OFFSET ?`,
+      [entityType, entityId, fiscalYearLabel, limit, offset]
+    );
+
+    return { rows, total: totalRow.count, page: page || 1, pageSize: limit };
   });
 
   // Which raw materials / color codes actually have archived data for a
@@ -1146,57 +1232,84 @@ function registerIpcHandlers() {
   // its archived history still exists but the label falls back to a
   // "(deleted)" placeholder rather than joining to a live row).
   ipcMain.handle('fiscal-year:getArchivedEntities', async (_event, { fiscalYearLabel }) => {
+    // Single joined query per entity type instead of SELECT DISTINCT
+    // followed by building a giant `IN (id1, id2, ..., id1000)` list — at
+    // the scale this app runs at (materials with 1000+ color codes), that
+    // approach either hits SQLite's compiled parameter-count limit
+    // (SQLITE_LIMIT_VARIABLE_NUMBER, historically 999) or forces a very
+    // inefficient query plan, and was the actual cause of a ~10 second
+    // stall opening a large closed year. This does the same job — every
+    // distinct entity that has archived data for this year, with its
+    // display name — in two flat queries with no per-row IN-list building.
+    const rawMaterialRows = await allAsync(
+      `SELECT DISTINCT rm.id, rm.name, rm.unit
+       FROM archived_transactions at
+       JOIN raw_materials rm ON rm.id = at.entity_id AND at.entity_type = 'RAW_MATERIAL'
+       WHERE at.fiscal_year_label = ?`,
+      [fiscalYearLabel]
+    );
+
+    const colorCodeRows = await allAsync(
+      `SELECT DISTINCT mc.id, mc.code, mc.raw_material_id, rm.name as raw_material_name, rm.unit as unit
+       FROM archived_transactions at
+       JOIN material_codes mc ON mc.id = at.entity_id AND at.entity_type = 'COLOR_CODE'
+       JOIN raw_materials rm ON rm.id = mc.raw_material_id
+       WHERE at.fiscal_year_label = ?`,
+      [fiscalYearLabel]
+    );
+
+    // Entities that were deleted from raw_materials/material_codes since
+    // being archived won't appear via the JOINs above (an INNER JOIN drops
+    // them), so a small separate pass finds any archived entity ids with no
+    // live match and reports them as deleted, exactly as before.
     const distinctEntities = await allAsync(
       `SELECT DISTINCT entity_type, entity_id FROM archived_transactions WHERE fiscal_year_label = ?`,
       [fiscalYearLabel]
     );
+    const foundRawMaterialIds = new Set(rawMaterialRows.map((r) => r.id));
+    const foundColorCodeIds = new Set(colorCodeRows.map((r) => r.id));
+    const deletedEntities = distinctEntities.filter((e) =>
+      e.entity_type === 'RAW_MATERIAL' ? !foundRawMaterialIds.has(e.entity_id) : !foundColorCodeIds.has(e.entity_id)
+    );
 
-    if (distinctEntities.length === 0) return [];
+    const results = [];
 
-    const rawMaterialIds = distinctEntities
-      .filter((e) => e.entity_type === 'RAW_MATERIAL')
-      .map((e) => e.entity_id);
-    const colorCodeIds = distinctEntities
-      .filter((e) => e.entity_type === 'COLOR_CODE')
-      .map((e) => e.entity_id);
-
-    const rawMaterialRows = rawMaterialIds.length
-      ? await allAsync(
-          `SELECT id, name, unit FROM raw_materials WHERE id IN (${rawMaterialIds.map(() => '?').join(',')})`,
-          rawMaterialIds
-        )
-      : [];
-    const colorCodeRows = colorCodeIds.length
-      ? await allAsync(
-          `SELECT mc.id, mc.code, rm.name as raw_material_name, rm.unit as unit
-           FROM material_codes mc
-           JOIN raw_materials rm ON rm.id = mc.raw_material_id
-           WHERE mc.id IN (${colorCodeIds.map(() => '?').join(',')})`,
-          colorCodeIds
-        )
-      : [];
-
-    const rawMaterialById = new Map(rawMaterialRows.map((r) => [r.id, r]));
-    const colorCodeById = new Map(colorCodeRows.map((r) => [r.id, r]));
-
-    return distinctEntities.map((e) => {
-      if (e.entity_type === 'RAW_MATERIAL') {
-        const rm = rawMaterialById.get(e.entity_id);
-        return {
-          entityType: 'RAW_MATERIAL',
-          entityId: e.entity_id,
-          label: rm ? rm.name : `Raw material #${e.entity_id} (deleted)`,
-          unit: rm ? rm.unit : 'kg',
-        };
-      }
-      const cc = colorCodeById.get(e.entity_id);
-      return {
+    for (const rm of rawMaterialRows) {
+      results.push({
+        entityType: 'RAW_MATERIAL',
+        entityId: rm.id,
+        label: rm.name,
+        unit: rm.unit,
+        rawMaterialId: rm.id,
+        rawMaterialName: rm.name,
+      });
+    }
+    for (const cc of colorCodeRows) {
+      results.push({
         entityType: 'COLOR_CODE',
+        entityId: cc.id,
+        label: `${cc.raw_material_name} — ${cc.code}`,
+        unit: cc.unit,
+        rawMaterialId: cc.raw_material_id,
+        rawMaterialName: cc.raw_material_name,
+      });
+    }
+    for (const e of deletedEntities) {
+      results.push({
+        entityType: e.entity_type,
         entityId: e.entity_id,
-        label: cc ? `${cc.raw_material_name} — ${cc.code}` : `Color code #${e.entity_id} (deleted)`,
-        unit: cc ? cc.unit : 'kg',
-      };
-    }).sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
+        label: e.entity_type === 'RAW_MATERIAL'
+          ? `Raw material #${e.entity_id} (deleted)`
+          : `Color code #${e.entity_id} (deleted)`,
+        unit: 'kg',
+        rawMaterialId: e.entity_type === 'RAW_MATERIAL' ? e.entity_id : null,
+        rawMaterialName: e.entity_type === 'RAW_MATERIAL'
+          ? `Raw material #${e.entity_id} (deleted)`
+          : 'Raw material (deleted)',
+      });
+    }
+
+    return results.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
   });
 
   async function backupDatabaseFile(label) {

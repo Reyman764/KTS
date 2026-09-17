@@ -148,7 +148,17 @@ export interface CrossReportFilters {
   rackNo?: string;
   startDate?: string;
   endDate?: string;
+  // When set, searches that closed year's frozen archive instead of the
+  // live ledger — the two are never combined in one search.
+  fiscalYearLabel?: string;
+  // Restrict to one color code, or one raw material (which also includes
+  // every color code under it, matching how the live ledger treats a raw
+  // material as the parent of its codes). Mutually exclusive in practice —
+  // if both are supplied, colorCodeId takes precedence.
+  rawMaterialId?: number;
+  colorCodeId?: number;
 }
+
 
 export interface CrossReportGroup {
   entityType: EntityType;
@@ -157,10 +167,11 @@ export interface CrossReportGroup {
   unit: string;
   transactionCount: number;
   totals: ReportTotals;
-  // The entity's actual current stock balance (from its full history) —
-  // NOT derived from the filtered/matched rows, and intentionally excluded
-  // from the grand total below, since summing balances across different
-  // entities has no real-world meaning.
+  // The entity's stock balance — its live current balance for a normal
+  // search, or that entity's ending balance for the selected fiscal year
+  // when searching an archived year. NOT derived from the filtered/matched
+  // rows, and intentionally excluded from the grand total below, since
+  // summing balances across different entities has no real-world meaning.
   currentBalance: number;
 }
 
@@ -168,6 +179,9 @@ export interface CrossReportResult {
   groups: CrossReportGroup[];
   grandTotal: ReportTotals;
   matchedTransactionCount: number;
+  // Echoes back which fiscal year was searched, or null for a live search —
+  // lets the UI label the results correctly.
+  fiscalYearLabel: string | null;
 }
 
 // Fiscal year closure ("Balance Brought Down") — see main.js for the full
@@ -215,6 +229,15 @@ export interface ArchivedTransaction extends Transaction {
   original_transaction_id: number | null;
 }
 
+// Archived transactions are paginated — a bulk raw material can have tens of
+// thousands of rows for a single closed year.
+export interface PaginatedArchivedTransactions {
+  rows: ArchivedTransaction[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 // One raw material or color code that has archived data for a given past
 // fiscal year — feeds the archive browser's picker.
 export interface ArchivedEntity {
@@ -222,6 +245,11 @@ export interface ArchivedEntity {
   entityId: number;
   label: string;
   unit: string;
+  // Which raw material this entity groups under — for a RAW_MATERIAL entity
+  // this is itself; for a COLOR_CODE it's the parent it belongs to. Used to
+  // nest color codes under their raw material in the archive browser.
+  rawMaterialId: number | null;
+  rawMaterialName: string;
 }
 
 declare global {
@@ -271,7 +299,9 @@ declare global {
           entityType: EntityType;
           entityId: number;
           fiscalYearLabel: string;
-        }) => Promise<ArchivedTransaction[]>;
+          page?: number;
+          pageSize?: number;
+        }) => Promise<PaginatedArchivedTransactions>;
         getArchivedEntities: (params: { fiscalYearLabel: string }) => Promise<ArchivedEntity[]>;
       };
     };
