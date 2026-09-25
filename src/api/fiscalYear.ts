@@ -1,10 +1,10 @@
 import type {
   ArchivedEntity,
-  ArchivedTransaction,
   EntityType,
   FiscalYearClosure,
   FiscalYearCloseResult,
   FiscalYearPreview,
+  PaginatedArchivedTransactions,
 } from '../types';
 
 export const fiscalYearApi = {
@@ -15,9 +15,17 @@ export const fiscalYearApi = {
   getArchivedTransactions: (
     entityType: EntityType,
     entityId: number,
-    fiscalYearLabel: string
-  ): Promise<ArchivedTransaction[]> =>
-    window.api.fiscalYear.getArchivedTransactions({ entityType, entityId, fiscalYearLabel }),
+    fiscalYearLabel: string,
+    page?: number,
+    pageSize?: number
+  ): Promise<PaginatedArchivedTransactions> =>
+    window.api.fiscalYear.getArchivedTransactions({
+      entityType,
+      entityId,
+      fiscalYearLabel,
+      page,
+      pageSize,
+    }),
   getArchivedEntities: (fiscalYearLabel: string): Promise<ArchivedEntity[]> =>
     window.api.fiscalYear.getArchivedEntities({ fiscalYearLabel }),
 };

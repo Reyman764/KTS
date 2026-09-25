@@ -3,6 +3,7 @@ export interface RawMaterial {
   name: string;
   unit: string;
   created_at: string;
+  deleted_at?: string | null;
 }
 
 export interface MaterialCode {
@@ -11,6 +12,7 @@ export interface MaterialCode {
   code: string;
   description: string | null;
   created_at: string;
+  deleted_at?: string | null;
 }
 
 export type EntityType = 'RAW_MATERIAL' | 'COLOR_CODE';
@@ -221,6 +223,48 @@ export interface FiscalYearClosure {
   backup_path: string | null;
 }
 
+export interface BackupCreateResult {
+  canceled: boolean;
+  backupPath?: string;
+}
+
+export interface BackupRestoreResult {
+  canceled: boolean;
+  restoredFrom?: string;
+  safetyBackupPath?: string;
+}
+
+export interface DeletionLogEntry {
+  id: number;
+  entity_type: EntityType;
+  entity_name: string;
+  raw_material_name: string | null;
+  color_code_count: number;
+  transaction_count: number;
+  deleted_at: string;
+}
+
+export interface RecycleBinRawMaterial {
+  id: number;
+  name: string;
+  unit: string;
+  deletedAt: string;
+}
+
+export interface RecycleBinColorCode {
+  id: number;
+  code: string;
+  description: string | null;
+  deletedAt: string;
+  rawMaterialId: number;
+  rawMaterialName: string | null;
+}
+
+export interface RecycleBinContents {
+  rawMaterials: RecycleBinRawMaterial[];
+  colorCodes: RecycleBinColorCode[];
+}
+
 // Same shape as Transaction, but with the extra fields archived_transactions
 // carries (which closure archived it, under which fiscal year label).
 export interface ArchivedTransaction extends Transaction {
@@ -303,6 +347,28 @@ declare global {
           pageSize?: number;
         }) => Promise<PaginatedArchivedTransactions>;
         getArchivedEntities: (params: { fiscalYearLabel: string }) => Promise<ArchivedEntity[]>;
+      };
+      backup: {
+        createNow: () => Promise<BackupCreateResult>;
+        restore: () => Promise<BackupRestoreResult>;
+        relaunch: () => Promise<void>;
+      };
+      deletionLog: {
+        getAll: () => Promise<DeletionLogEntry[]>;
+      };
+      admin: {
+        unlock: (password: string) => Promise<{ unlocked: boolean }>;
+      };
+      recycleBin: {
+        list: () => Promise<RecycleBinContents>;
+        restoreRawMaterial: (id: number) => Promise<{ id: number; restored: boolean }>;
+        restoreColorCode: (id: number) => Promise<{ id: number; restored: boolean }>;
+        purgeRawMaterial: (id: number) => Promise<{ id: number; purged: boolean }>;
+        purgeColorCode: (id: number) => Promise<{ id: number; purged: boolean }>;
+        restoreRawMaterials: (ids: number[]) => Promise<{ restoredCount: number }>;
+        restoreColorCodes: (ids: number[]) => Promise<{ restoredCount: number }>;
+        purgeRawMaterials: (ids: number[]) => Promise<{ purgedCount: number }>;
+        purgeColorCodes: (ids: number[]) => Promise<{ purgedCount: number }>;
       };
     };
   }

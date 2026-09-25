@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
@@ -15,6 +15,15 @@ const __dirname = path.dirname(__filename);
 const dbPath = path.join(app.getPath('userData'), 'kts-wool-inventory.db');
 const backupsDir = path.join(app.getPath('userData'), 'backups');
 let db;
+
+// ---------------------------------------------------------------------------
+// Admin section password
+// ---------------------------------------------------------------------------
+// Hardcoded intentionally, not user-changeable from within the app — set
+// once by whoever builds/maintains this app for the office. Gates the
+// Recycle Bin and Deletion Log screens (restoring/permanently deleting a
+// raw material or color code).
+const ADMIN_PASSWORD = 'Kts-Wool-#Stock';
 
 function runAsync(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -56,7 +65,8 @@ function initDb() {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
             unit TEXT NOT NULL DEFAULT 'kg',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            deleted_at TEXT
           )
         `);
 
@@ -67,6 +77,7 @@ function initDb() {
             code TEXT NOT NULL,
             description TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            deleted_at TEXT,
             FOREIGN KEY (raw_material_id) REFERENCES raw_materials(id) ON DELETE CASCADE,
             UNIQUE (raw_material_id, code)
           )
@@ -199,6 +210,28 @@ function initDb() {
         // can't use a single index and stays slow.
         db.run('CREATE INDEX IF NOT EXISTS idx_archived_entity_year_date ON archived_transactions(entity_type, entity_id, fiscal_year_label, date)');
 
+        // ------------------------------------------------------------------
+        // deletion_log: a permanent, append-only record of every raw
+        // material / color code deletion. Deliberately no UPDATE or DELETE
+        // is ever exposed for this table via IPC — only INSERT (at delete
+        // time) and SELECT (to view it). This is what lets the log be
+        // trusted as "this really happened", independent of whatever the
+        // live inventory tables say now.
+        // ------------------------------------------------------------------
+        db.run(`
+          CREATE TABLE IF NOT EXISTS deletion_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL CHECK (entity_type IN ('RAW_MATERIAL', 'COLOR_CODE')),
+            entity_name TEXT NOT NULL,
+            raw_material_name TEXT,
+            color_code_count INTEGER NOT NULL DEFAULT 0,
+            transaction_count INTEGER NOT NULL DEFAULT 0,
+            deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
+          )
+        `);
+
+        db.run('CREATE INDEX IF NOT EXISTS idx_deletion_log_deleted_at ON deletion_log(deleted_at)');
+
         // Completion marker: db.serialize() queues sqlite3 callback-style
         // statements in order on this connection, so by the time THIS
         // statement's callback fires, every CREATE TABLE/INDEX above has
@@ -272,41 +305,91 @@ async function migrateEntryTypeConstraint() {
   }
 }
 
+async function migrateSoftDeleteColumns() {
+  const rawMaterialsInfo = await allAsync('PRAGMA table_info(raw_materials)');
+  const hasRawMaterialDeletedAt = rawMaterialsInfo.some((col) => col.name === 'deleted_at');
+  if (!hasRawMaterialDeletedAt) {
+    console.log('Adding deleted_at column to raw_materials...');
+    await runAsync('ALTER TABLE raw_materials ADD COLUMN deleted_at TEXT');
+  }
+
+  const materialCodesInfo = await allAsync('PRAGMA table_info(material_codes)');
+  const hasCodeDeletedAt = materialCodesInfo.some((col) => col.name === 'deleted_at');
+  if (!hasCodeDeletedAt) {
+    console.log('Adding deleted_at column to material_codes...');
+    await runAsync('ALTER TABLE material_codes ADD COLUMN deleted_at TEXT');
+  }
+
+  if (!hasRawMaterialDeletedAt || !hasCodeDeletedAt) {
+    await runAsync(
+      'CREATE INDEX IF NOT EXISTS idx_raw_materials_deleted_at ON raw_materials(deleted_at)'
+    );
+    await runAsync(
+      'CREATE INDEX IF NOT EXISTS idx_material_codes_deleted_at ON material_codes(deleted_at)'
+    );
+    console.log('Migration complete.');
+  }
+}
+
 // ---------------------------------------------------------------------------
 // IPC handlers
 // ---------------------------------------------------------------------------
 function registerIpcHandlers() {
   // Raw Materials
   ipcMain.handle('raw-materials:getAll', async () => {
-    return allAsync('SELECT * FROM raw_materials ORDER BY name ASC');
+    return allAsync('SELECT * FROM raw_materials WHERE deleted_at IS NULL ORDER BY name ASC');
   });
 
   ipcMain.handle('raw-materials:create', async (_event, { name, unit }) => {
+    const trimmedName = (name || '').trim();
+    const deletedMatch = await getAsync(
+      'SELECT id FROM raw_materials WHERE name = ? AND deleted_at IS NOT NULL',
+      [trimmedName]
+    );
+    if (deletedMatch) {
+      throw new Error(
+        `"${trimmedName}" already exists in the Recycle Bin (Admin section). Restore it from there instead of creating it again, or choose a different name.`
+      );
+    }
     const result = await runAsync(
       'INSERT INTO raw_materials (name, unit) VALUES (?, ?)',
-      [name, unit || 'kg']
+      [trimmedName, unit || 'kg']
     );
     return getAsync('SELECT * FROM raw_materials WHERE id = ?', [result.id]);
   });
 
   ipcMain.handle('raw-materials:update', async (_event, { id, name, unit }) => {
-    const existing = await getAsync('SELECT * FROM raw_materials WHERE id = ?', [id]);
+    const existing = await getAsync(
+      'SELECT * FROM raw_materials WHERE id = ? AND deleted_at IS NULL',
+      [id]
+    );
     if (!existing) {
       throw new Error(`Raw material ${id} not found`);
     }
+    const trimmedName = (name || '').trim();
+    const deletedMatch = await getAsync(
+      'SELECT id FROM raw_materials WHERE name = ? AND deleted_at IS NOT NULL AND id != ?',
+      [trimmedName, id]
+    );
+    if (deletedMatch) {
+      throw new Error(
+        `"${trimmedName}" already exists in the Recycle Bin (Admin section). Restore it from there instead, or choose a different name.`
+      );
+    }
     await runAsync(
       'UPDATE raw_materials SET name = ?, unit = ? WHERE id = ?',
-      [name, unit || 'kg', id]
+      [trimmedName, unit || 'kg', id]
     );
     return getAsync('SELECT * FROM raw_materials WHERE id = ?', [id]);
   });
 
   // Counts what a raw-material delete would take with it, without deleting
   // anything. Used by the confirm dialog so the user sees real numbers before
-  // committing to a cascade.
+  // committing. Only counts currently-live color codes/transactions — a code
+  // already in the recycle bin isn't "taken with" this delete.
   ipcMain.handle('raw-materials:getDeleteImpact', async (_event, id) => {
     const codes = await allAsync(
-      'SELECT id FROM material_codes WHERE raw_material_id = ?',
+      'SELECT id FROM material_codes WHERE raw_material_id = ? AND deleted_at IS NULL',
       [id]
     );
     const codeIds = codes.map((c) => c.id);
@@ -332,16 +415,336 @@ function registerIpcHandlers() {
     };
   });
 
+  // Soft delete: marks the raw material and its currently-live color codes
+  // as deleted (deleted_at set) instead of removing any rows. Transactions
+  // are left completely untouched, so a later restore brings everything
+  // back exactly as it was, balances included. The item disappears from
+  // every normal list/report (which all filter on deleted_at IS NULL) but
+  // is recoverable from the Admin > Recycle Bin until someone permanently
+  // purges it there.
   ipcMain.handle('raw-materials:delete', async (_event, id) => {
-    const existing = await getAsync('SELECT * FROM raw_materials WHERE id = ?', [id]);
+    const existing = await getAsync(
+      'SELECT * FROM raw_materials WHERE id = ? AND deleted_at IS NULL',
+      [id]
+    );
     if (!existing) {
       throw new Error(`Raw material ${id} not found`);
     }
 
     const codes = await allAsync(
-      'SELECT id FROM material_codes WHERE raw_material_id = ?',
+      'SELECT id FROM material_codes WHERE raw_material_id = ? AND deleted_at IS NULL',
       [id]
     );
+    const codeIds = codes.map((c) => c.id);
+
+    const rawMaterialTxnRow = await getAsync(
+      "SELECT COUNT(*) as count FROM transactions WHERE entity_type = 'RAW_MATERIAL' AND entity_id = ?",
+      [id]
+    );
+    let codeTxnCount = 0;
+    if (codeIds.length > 0) {
+      const placeholders = codeIds.map(() => '?').join(',');
+      const row = await getAsync(
+        `SELECT COUNT(*) as count FROM transactions WHERE entity_type = 'COLOR_CODE' AND entity_id IN (${placeholders})`,
+        codeIds
+      );
+      codeTxnCount = row.count;
+    }
+    const totalTxnCount = rawMaterialTxnRow.count + codeTxnCount;
+
+    await runAsync('BEGIN TRANSACTION');
+    try {
+      await runAsync('UPDATE raw_materials SET deleted_at = datetime(\'now\') WHERE id = ?', [id]);
+      if (codeIds.length > 0) {
+        const placeholders = codeIds.map(() => '?').join(',');
+        await runAsync(
+          `UPDATE material_codes SET deleted_at = datetime('now') WHERE id IN (${placeholders})`,
+          codeIds
+        );
+      }
+      // Logged in the same transaction as the delete itself, so the log
+      // entry and the deletion either both happen or neither does.
+      await runAsync(
+        `INSERT INTO deletion_log (entity_type, entity_name, raw_material_name, color_code_count, transaction_count)
+         VALUES ('RAW_MATERIAL', ?, NULL, ?, ?)`,
+        [existing.name, codeIds.length, totalTxnCount]
+      );
+      await runAsync('COMMIT');
+    } catch (err) {
+      await runAsync('ROLLBACK');
+      throw err;
+    }
+
+    return { id, deleted: true };
+  });
+
+  // Material Codes (Color Codes)
+  ipcMain.handle('material-codes:getByRawMaterial', async (_event, rawMaterialId) => {
+    return allAsync(
+      'SELECT * FROM material_codes WHERE raw_material_id = ? AND deleted_at IS NULL ORDER BY code ASC',
+      [rawMaterialId]
+    );
+  });
+
+  ipcMain.handle('material-codes:create', async (_event, { rawMaterialId, code, description }) => {
+    const trimmedCode = (code || '').trim();
+    const deletedMatch = await getAsync(
+      'SELECT id FROM material_codes WHERE raw_material_id = ? AND code = ? AND deleted_at IS NOT NULL',
+      [rawMaterialId, trimmedCode]
+    );
+    if (deletedMatch) {
+      throw new Error(
+        `"${trimmedCode}" already exists in the Recycle Bin (Admin section) for this raw material. Restore it from there instead, or choose a different code.`
+      );
+    }
+    const result = await runAsync(
+      'INSERT INTO material_codes (raw_material_id, code, description) VALUES (?, ?, ?)',
+      [rawMaterialId, trimmedCode, description || null]
+    );
+    return getAsync('SELECT * FROM material_codes WHERE id = ?', [result.id]);
+  });
+
+  ipcMain.handle('material-codes:update', async (_event, { id, code, description }) => {
+    const existing = await getAsync(
+      'SELECT * FROM material_codes WHERE id = ? AND deleted_at IS NULL',
+      [id]
+    );
+    if (!existing) {
+      throw new Error(`Material code ${id} not found`);
+    }
+    const trimmedCode = (code || '').trim();
+    const deletedMatch = await getAsync(
+      'SELECT id FROM material_codes WHERE raw_material_id = ? AND code = ? AND deleted_at IS NOT NULL AND id != ?',
+      [existing.raw_material_id, trimmedCode, id]
+    );
+    if (deletedMatch) {
+      throw new Error(
+        `"${trimmedCode}" already exists in the Recycle Bin (Admin section) for this raw material. Restore it from there instead, or choose a different code.`
+      );
+    }
+    await runAsync(
+      'UPDATE material_codes SET code = ?, description = ? WHERE id = ?',
+      [trimmedCode, description || null, id]
+    );
+    return getAsync('SELECT * FROM material_codes WHERE id = ?', [id]);
+  });
+
+  ipcMain.handle('material-codes:getDeleteImpact', async (_event, id) => {
+    const row = await getAsync(
+      "SELECT COUNT(*) as count FROM transactions WHERE entity_type = 'COLOR_CODE' AND entity_id = ?",
+      [id]
+    );
+    return { transactionCount: row.count };
+  });
+
+  ipcMain.handle('material-codes:delete', async (_event, id) => {
+    const existing = await getAsync(
+      'SELECT * FROM material_codes WHERE id = ? AND deleted_at IS NULL',
+      [id]
+    );
+    if (!existing) {
+      throw new Error(`Material code ${id} not found`);
+    }
+    const rawMaterial = await getAsync(
+      'SELECT name FROM raw_materials WHERE id = ?',
+      [existing.raw_material_id]
+    );
+    const txnRow = await getAsync(
+      "SELECT COUNT(*) as count FROM transactions WHERE entity_type = 'COLOR_CODE' AND entity_id = ?",
+      [id]
+    );
+
+    await runAsync('BEGIN TRANSACTION');
+    try {
+      await runAsync("UPDATE material_codes SET deleted_at = datetime('now') WHERE id = ?", [id]);
+      await runAsync(
+        `INSERT INTO deletion_log (entity_type, entity_name, raw_material_name, color_code_count, transaction_count)
+         VALUES ('COLOR_CODE', ?, ?, 0, ?)`,
+        [existing.code, rawMaterial ? rawMaterial.name : null, txnRow.count]
+      );
+      await runAsync('COMMIT');
+    } catch (err) {
+      await runAsync('ROLLBACK');
+      throw err;
+    }
+
+    return { id, deleted: true };
+  });
+
+  // ---------------------------------------------------------------------------
+  // Deletion log — read-only. No update/delete handler is ever exposed for
+  // this table; only raw-materials:delete and material-codes:delete insert
+  // into it, inside their own transaction. Ordered newest first.
+  // ---------------------------------------------------------------------------
+  ipcMain.handle('deletion-log:getAll', async () => {
+    return allAsync('SELECT * FROM deletion_log ORDER BY deleted_at DESC, id DESC');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Admin unlock — checks the password against the hardcoded constant above.
+  // Deliberately simple (no session token, no rate limiting) since this is a
+  // single-office desktop app, not a networked multi-user system. The
+  // renderer keeps track of "unlocked" for the current app session only; it
+  // re-locks every time the app is restarted.
+  // ---------------------------------------------------------------------------
+  ipcMain.handle('admin:unlock', async (_event, password) => {
+    return { unlocked: password === ADMIN_PASSWORD };
+  });
+
+  // ---------------------------------------------------------------------------
+  // Recycle bin — Admin-only (the renderer only calls these from behind the
+  // password-gated Admin section, but they're guarded here too: restore and
+  // purge only ever act on rows that are actually soft-deleted).
+  // ---------------------------------------------------------------------------
+
+  // Lists every soft-deleted raw material and color code still sitting in
+  // the bin (i.e. not yet purged). Color codes show their parent raw
+  // material's name for context, even if that raw material is itself
+  // deleted.
+  ipcMain.handle('recycle-bin:list', async () => {
+    const rawMaterials = await allAsync(`
+      SELECT id, name, unit, deleted_at
+      FROM raw_materials
+      WHERE deleted_at IS NOT NULL
+      ORDER BY deleted_at DESC
+    `);
+    const colorCodes = await allAsync(`
+      SELECT mc.id, mc.code, mc.description, mc.deleted_at,
+             mc.raw_material_id, rm.name as raw_material_name
+      FROM material_codes mc
+      LEFT JOIN raw_materials rm ON rm.id = mc.raw_material_id
+      WHERE mc.deleted_at IS NOT NULL
+      ORDER BY mc.deleted_at DESC
+    `);
+
+    return {
+      rawMaterials: rawMaterials.map((r) => ({
+        id: r.id,
+        name: r.name,
+        unit: r.unit,
+        deletedAt: r.deleted_at,
+      })),
+      colorCodes: colorCodes.map((c) => ({
+        id: c.id,
+        code: c.code,
+        description: c.description,
+        deletedAt: c.deleted_at,
+        rawMaterialId: c.raw_material_id,
+        rawMaterialName: c.raw_material_name,
+      })),
+    };
+  });
+
+  // Restores a soft-deleted raw material (clears deleted_at). Its color
+  // codes are NOT automatically restored with it — each one still shows in
+  // the bin individually and needs its own restore, since some of them may
+  // have been deleted separately, earlier, on purpose.
+  ipcMain.handle('recycle-bin:restoreRawMaterial', async (_event, id) => {
+    const existing = await getAsync(
+      'SELECT * FROM raw_materials WHERE id = ? AND deleted_at IS NOT NULL',
+      [id]
+    );
+    if (!existing) {
+      throw new Error('That raw material is not in the recycle bin.');
+    }
+    await runAsync('UPDATE raw_materials SET deleted_at = NULL WHERE id = ?', [id]);
+    return { id, restored: true };
+  });
+
+  // Restores a soft-deleted color code. If its parent raw material is also
+  // still deleted, the raw material is restored too — a color code can't
+  // usefully exist under a parent the app hides everywhere.
+  ipcMain.handle('recycle-bin:restoreColorCode', async (_event, id) => {
+    const existing = await getAsync(
+      'SELECT * FROM material_codes WHERE id = ? AND deleted_at IS NOT NULL',
+      [id]
+    );
+    if (!existing) {
+      throw new Error('That color code is not in the recycle bin.');
+    }
+    await runAsync('BEGIN TRANSACTION');
+    try {
+      await runAsync('UPDATE material_codes SET deleted_at = NULL WHERE id = ?', [id]);
+      await runAsync(
+        "UPDATE raw_materials SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL",
+        [existing.raw_material_id]
+      );
+      await runAsync('COMMIT');
+    } catch (err) {
+      await runAsync('ROLLBACK');
+      throw err;
+    }
+    return { id, restored: true };
+  });
+
+  // Restores several soft-deleted raw materials at once — used by "select
+  // all" in the recycle bin so restoring hundreds/thousands of items is one
+  // fast batched update instead of one IPC round-trip per item.
+  ipcMain.handle('recycle-bin:restoreRawMaterials', async (_event, ids) => {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return { restoredCount: 0 };
+    }
+    const placeholders = ids.map(() => '?').join(',');
+    const result = await runAsync(
+      `UPDATE raw_materials SET deleted_at = NULL WHERE id IN (${placeholders}) AND deleted_at IS NOT NULL`,
+      ids
+    );
+    return { restoredCount: result.changes };
+  });
+
+  // Restores several soft-deleted color codes at once, auto-restoring any
+  // parent raw material that's also still deleted (same rule as the
+  // single-item restore above).
+  ipcMain.handle('recycle-bin:restoreColorCodes', async (_event, ids) => {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return { restoredCount: 0 };
+    }
+    const placeholders = ids.map(() => '?').join(',');
+    const parentRows = await allAsync(
+      `SELECT DISTINCT raw_material_id FROM material_codes WHERE id IN (${placeholders}) AND deleted_at IS NOT NULL`,
+      ids
+    );
+    const parentIds = parentRows.map((r) => r.raw_material_id);
+
+    await runAsync('BEGIN TRANSACTION');
+    try {
+      const result = await runAsync(
+        `UPDATE material_codes SET deleted_at = NULL WHERE id IN (${placeholders}) AND deleted_at IS NOT NULL`,
+        ids
+      );
+      if (parentIds.length > 0) {
+        const parentPlaceholders = parentIds.map(() => '?').join(',');
+        await runAsync(
+          `UPDATE raw_materials SET deleted_at = NULL WHERE id IN (${parentPlaceholders}) AND deleted_at IS NOT NULL`,
+          parentIds
+        );
+      }
+      await runAsync('COMMIT');
+      return { restoredCount: result.changes };
+    } catch (err) {
+      await runAsync('ROLLBACK');
+      throw err;
+    }
+  });
+
+
+  // this is the point of no return. Actually removes the rows (raw
+  // material, its color codes, and every related transaction), the same
+  // way the old hard-delete used to work. A backup is taken first as an
+  // extra safety net even at this stage. The deletion_log entry made when
+  // it was first soft-deleted is untouched — the log survives a purge.
+  ipcMain.handle('recycle-bin:purgeRawMaterial', async (_event, id) => {
+    const existing = await getAsync(
+      'SELECT * FROM raw_materials WHERE id = ? AND deleted_at IS NOT NULL',
+      [id]
+    );
+    if (!existing) {
+      throw new Error('That raw material is not in the recycle bin.');
+    }
+
+    await backupDatabaseFile(`purge-${existing.name}`);
+
+    const codes = await allAsync('SELECT id FROM material_codes WHERE raw_material_id = ?', [id]);
     const codeIds = codes.map((c) => c.id);
 
     await runAsync('BEGIN TRANSACTION');
@@ -357,8 +760,6 @@ function registerIpcHandlers() {
           codeIds
         );
       }
-      // material_codes rows cascade via the FK, but deleting explicitly keeps
-      // this path correct even if the FK enforcement pragma is ever off.
       await runAsync('DELETE FROM material_codes WHERE raw_material_id = ?', [id]);
       await runAsync('DELETE FROM raw_materials WHERE id = ?', [id]);
       await runAsync('COMMIT');
@@ -367,50 +768,22 @@ function registerIpcHandlers() {
       throw err;
     }
 
-    return { id, deleted: true };
+    return { id, purged: true };
   });
 
-  // Material Codes (Color Codes)
-  ipcMain.handle('material-codes:getByRawMaterial', async (_event, rawMaterialId) => {
-    return allAsync(
-      'SELECT * FROM material_codes WHERE raw_material_id = ? ORDER BY code ASC',
-      [rawMaterialId]
-    );
-  });
-
-  ipcMain.handle('material-codes:create', async (_event, { rawMaterialId, code, description }) => {
-    const result = await runAsync(
-      'INSERT INTO material_codes (raw_material_id, code, description) VALUES (?, ?, ?)',
-      [rawMaterialId, code, description || null]
-    );
-    return getAsync('SELECT * FROM material_codes WHERE id = ?', [result.id]);
-  });
-
-  ipcMain.handle('material-codes:update', async (_event, { id, code, description }) => {
-    const existing = await getAsync('SELECT * FROM material_codes WHERE id = ?', [id]);
-    if (!existing) {
-      throw new Error(`Material code ${id} not found`);
-    }
-    await runAsync(
-      'UPDATE material_codes SET code = ?, description = ? WHERE id = ?',
-      [code, description || null, id]
-    );
-    return getAsync('SELECT * FROM material_codes WHERE id = ?', [id]);
-  });
-
-  ipcMain.handle('material-codes:getDeleteImpact', async (_event, id) => {
-    const row = await getAsync(
-      "SELECT COUNT(*) as count FROM transactions WHERE entity_type = 'COLOR_CODE' AND entity_id = ?",
+  // Permanently deletes a color code already in the recycle bin, and its
+  // transactions. Same "point of no return" semantics as the raw material
+  // purge above.
+  ipcMain.handle('recycle-bin:purgeColorCode', async (_event, id) => {
+    const existing = await getAsync(
+      'SELECT * FROM material_codes WHERE id = ? AND deleted_at IS NOT NULL',
       [id]
     );
-    return { transactionCount: row.count };
-  });
-
-  ipcMain.handle('material-codes:delete', async (_event, id) => {
-    const existing = await getAsync('SELECT * FROM material_codes WHERE id = ?', [id]);
     if (!existing) {
-      throw new Error(`Material code ${id} not found`);
+      throw new Error('That color code is not in the recycle bin.');
     }
+
+    await backupDatabaseFile(`purge-${existing.code}`);
 
     await runAsync('BEGIN TRANSACTION');
     try {
@@ -425,7 +798,97 @@ function registerIpcHandlers() {
       throw err;
     }
 
-    return { id, deleted: true };
+    return { id, purged: true };
+  });
+
+  // Permanently deletes several raw materials (and everything under them)
+  // in one go. One safety backup is taken before the whole batch, not one
+  // per item — a thousand backups for a thousand items would be wasteful
+  // and slow. Everything else about "permanent" is unchanged: this is the
+  // real, unrecoverable delete.
+  ipcMain.handle('recycle-bin:purgeRawMaterials', async (_event, ids) => {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return { purgedCount: 0 };
+    }
+    const placeholders = ids.map(() => '?').join(',');
+    const existing = await allAsync(
+      `SELECT id FROM raw_materials WHERE id IN (${placeholders}) AND deleted_at IS NOT NULL`,
+      ids
+    );
+    const validIds = existing.map((r) => r.id);
+    if (validIds.length === 0) {
+      return { purgedCount: 0 };
+    }
+
+    await backupDatabaseFile(`purge-${validIds.length}-raw-materials`);
+
+    const validPlaceholders = validIds.map(() => '?').join(',');
+    const codes = await allAsync(
+      `SELECT id FROM material_codes WHERE raw_material_id IN (${validPlaceholders})`,
+      validIds
+    );
+    const codeIds = codes.map((c) => c.id);
+
+    await runAsync('BEGIN TRANSACTION');
+    try {
+      await runAsync(
+        `DELETE FROM transactions WHERE entity_type = 'RAW_MATERIAL' AND entity_id IN (${validPlaceholders})`,
+        validIds
+      );
+      if (codeIds.length > 0) {
+        const codePlaceholders = codeIds.map(() => '?').join(',');
+        await runAsync(
+          `DELETE FROM transactions WHERE entity_type = 'COLOR_CODE' AND entity_id IN (${codePlaceholders})`,
+          codeIds
+        );
+      }
+      await runAsync(
+        `DELETE FROM material_codes WHERE raw_material_id IN (${validPlaceholders})`,
+        validIds
+      );
+      await runAsync(`DELETE FROM raw_materials WHERE id IN (${validPlaceholders})`, validIds);
+      await runAsync('COMMIT');
+    } catch (err) {
+      await runAsync('ROLLBACK');
+      throw err;
+    }
+
+    return { purgedCount: validIds.length };
+  });
+
+  // Permanently deletes several color codes (and their transactions) in one
+  // go. Same one-backup-per-batch approach as the raw material bulk purge.
+  ipcMain.handle('recycle-bin:purgeColorCodes', async (_event, ids) => {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return { purgedCount: 0 };
+    }
+    const placeholders = ids.map(() => '?').join(',');
+    const existing = await allAsync(
+      `SELECT id FROM material_codes WHERE id IN (${placeholders}) AND deleted_at IS NOT NULL`,
+      ids
+    );
+    const validIds = existing.map((r) => r.id);
+    if (validIds.length === 0) {
+      return { purgedCount: 0 };
+    }
+
+    await backupDatabaseFile(`purge-${validIds.length}-color-codes`);
+
+    const validPlaceholders = validIds.map(() => '?').join(',');
+    await runAsync('BEGIN TRANSACTION');
+    try {
+      await runAsync(
+        `DELETE FROM transactions WHERE entity_type = 'COLOR_CODE' AND entity_id IN (${validPlaceholders})`,
+        validIds
+      );
+      await runAsync(`DELETE FROM material_codes WHERE id IN (${validPlaceholders})`, validIds);
+      await runAsync('COMMIT');
+    } catch (err) {
+      await runAsync('ROLLBACK');
+      throw err;
+    }
+
+    return { purgedCount: validIds.length };
   });
 
   // ---------------------------------------------------------------------------
@@ -566,6 +1029,23 @@ function registerIpcHandlers() {
       wastage,
       remark,
     } = payload;
+
+    // Defensive guard: the UI can only ever reach this handler through a
+    // raw material/color code that's currently live (deleted items are
+    // filtered out of every list and dropdown), but this check protects
+    // against a stale reference some future code path might pass in —
+    // without it, a transaction could get silently created against an
+    // item hidden in the Recycle Bin, invisible everywhere until restored.
+    const entityTable = entityType === 'RAW_MATERIAL' ? 'raw_materials' : 'material_codes';
+    const entity = await getAsync(
+      `SELECT id FROM ${entityTable} WHERE id = ? AND deleted_at IS NULL`,
+      [entityId]
+    );
+    if (!entity) {
+      throw new Error(
+        'This item has been deleted and is sitting in the Recycle Bin. Restore it from Admin before adding entries.'
+      );
+    }
 
     const receiveFromDyeVal = Number(receiveFromDye) || 0;
     const knittingDistributionVal = Number(knittingDistribution) || 0;
@@ -1029,11 +1509,14 @@ function registerIpcHandlers() {
   // current balance and transaction count, so a confirmation screen can show
   // exactly what closing the year would do before anything is touched.
   ipcMain.handle('fiscal-year:preview', async () => {
-    const rawMaterials = await allAsync('SELECT id, name, unit FROM raw_materials ORDER BY name ASC');
+    const rawMaterials = await allAsync(
+      'SELECT id, name, unit FROM raw_materials WHERE deleted_at IS NULL ORDER BY name ASC'
+    );
     const colorCodes = await allAsync(`
       SELECT mc.id, mc.code, rm.name as raw_material_name, rm.unit as unit
       FROM material_codes mc
       JOIN raw_materials rm ON rm.id = mc.raw_material_id
+      WHERE mc.deleted_at IS NULL AND rm.deleted_at IS NULL
       ORDER BY rm.name ASC, mc.code ASC
     `);
 
@@ -1104,8 +1587,8 @@ function registerIpcHandlers() {
 
     const backupPath = await backupDatabaseFile(trimmedLabel);
 
-    const rawMaterials = await allAsync('SELECT id FROM raw_materials');
-    const colorCodes = await allAsync('SELECT id FROM material_codes');
+    const rawMaterials = await allAsync('SELECT id FROM raw_materials WHERE deleted_at IS NULL');
+    const colorCodes = await allAsync('SELECT id FROM material_codes WHERE deleted_at IS NULL');
     const allEntities = [
       ...rawMaterials.map((r) => ({ entityType: 'RAW_MATERIAL', entityId: r.id })),
       ...colorCodes.map((c) => ({ entityType: 'COLOR_CODE', entityId: c.id })),
@@ -1320,6 +1803,80 @@ function registerIpcHandlers() {
     await fs.copyFile(dbPath, backupPath);
     return backupPath;
   }
+
+  // Manual, on-demand backup: the user picks exactly where the copy goes
+  // (a USB drive, a synced folder, anywhere) via the native Save dialog,
+  // rather than it always landing in the app's internal backups folder.
+  // A timestamped default filename is suggested but the user can rename it.
+  ipcMain.handle('backup:createNow', async (_event) => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const defaultName = `kts-wool-inventory-backup-${timestamp}.db`;
+
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Save Backup As',
+      defaultPath: path.join(app.getPath('documents'), defaultName),
+      filters: [{ name: 'Wool Inventory Backup', extensions: ['db'] }],
+    });
+
+    if (canceled || !filePath) {
+      return { canceled: true };
+    }
+
+    await fs.copyFile(dbPath, filePath);
+    return { canceled: false, backupPath: filePath };
+  });
+
+  // Restore: the user picks a .db file via the native Open dialog. We do a
+  // light sanity check (SQLite file header) so a wrong file is rejected
+  // before anything is touched, then copy it over the live database.
+  // The old live database is preserved as a safety-net copy in case the
+  // wrong backup was chosen. The app must restart afterwards, since the
+  // existing sqlite3 connection is still open on the old file — the
+  // renderer is expected to relaunch the app once this resolves.
+  ipcMain.handle('backup:restore', async (_event) => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: 'Choose a Backup File to Restore',
+      defaultPath: app.getPath('documents'),
+      properties: ['openFile'],
+      filters: [{ name: 'Wool Inventory Backup', extensions: ['db'] }],
+    });
+
+    if (canceled || filePaths.length === 0) {
+      return { canceled: true };
+    }
+
+    const chosenPath = filePaths[0];
+
+    // SQLite database files always begin with this 16-byte magic header.
+    // Checking it catches an accidentally-picked wrong file (a random
+    // .db-renamed file, a partial/corrupt copy) before we touch live data.
+    const handle = await fs.open(chosenPath, 'r');
+    const headerBuf = Buffer.alloc(16);
+    await handle.read(headerBuf, 0, 16, 0);
+    await handle.close();
+    const isSqlite = headerBuf.toString('utf8', 0, 15) === 'SQLite format 3';
+    if (!isSqlite) {
+      throw new Error('That file does not look like a valid backup (.db) file.');
+    }
+
+    // Keep a safety-net copy of the current live database before overwriting
+    // it, in case the wrong backup was selected.
+    await fs.mkdir(backupsDir, { recursive: true });
+    const preRestoreTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const preRestoreSafetyPath = path.join(
+      backupsDir,
+      `kts-wool-inventory-before-restore-${preRestoreTimestamp}.db`
+    );
+    await fs.copyFile(dbPath, preRestoreSafetyPath);
+
+    if (db) {
+      await new Promise((resolve) => db.close(() => resolve()));
+    }
+
+    await fs.copyFile(chosenPath, dbPath);
+
+    return { canceled: false, restoredFrom: chosenPath, safetyBackupPath: preRestoreSafetyPath };
+  });
 }
 
 function emptyReportTotals() {
@@ -1363,6 +1920,7 @@ app.whenReady().then(async () => {
   try {
     await initDb();
     await migrateEntryTypeConstraint();
+    await migrateSoftDeleteColumns();
   } catch (err) {
     console.error('Failed to initialize database:', err);
     app.quit();
@@ -1383,4 +1941,12 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   if (db) db.close();
+});
+
+// Triggered by the renderer right after a successful restore, so the app
+// reopens fresh against the newly-restored database file instead of
+// continuing to run against the now-closed old connection.
+ipcMain.handle('backup:relaunch', () => {
+  app.relaunch();
+  app.exit(0);
 });

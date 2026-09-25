@@ -43,4 +43,26 @@ contextBridge.exposeInMainWorld('api', {
     getArchivedEntities: (params) =>
       ipcRenderer.invoke('fiscal-year:getArchivedEntities', params),
   },
+  backup: {
+    createNow: () => ipcRenderer.invoke('backup:createNow'),
+    restore: () => ipcRenderer.invoke('backup:restore'),
+    relaunch: () => ipcRenderer.invoke('backup:relaunch'),
+  },
+  deletionLog: {
+    getAll: () => ipcRenderer.invoke('deletion-log:getAll'),
+  },
+  admin: {
+    unlock: (password) => ipcRenderer.invoke('admin:unlock', password),
+  },
+  recycleBin: {
+    list: () => ipcRenderer.invoke('recycle-bin:list'),
+    restoreRawMaterial: (id) => ipcRenderer.invoke('recycle-bin:restoreRawMaterial', id),
+    restoreColorCode: (id) => ipcRenderer.invoke('recycle-bin:restoreColorCode', id),
+    purgeRawMaterial: (id) => ipcRenderer.invoke('recycle-bin:purgeRawMaterial', id),
+    purgeColorCode: (id) => ipcRenderer.invoke('recycle-bin:purgeColorCode', id),
+    restoreRawMaterials: (ids) => ipcRenderer.invoke('recycle-bin:restoreRawMaterials', ids),
+    restoreColorCodes: (ids) => ipcRenderer.invoke('recycle-bin:restoreColorCodes', ids),
+    purgeRawMaterials: (ids) => ipcRenderer.invoke('recycle-bin:purgeRawMaterials', ids),
+    purgeColorCodes: (ids) => ipcRenderer.invoke('recycle-bin:purgeColorCodes', ids),
+  },
 });

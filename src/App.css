@@ -1129,6 +1129,14 @@
   margin: 0 0 4px;
 }
 
+.delete-confirm-type {
+  margin: 10px 0 4px;
+}
+
+.delete-confirm-type .field-label {
+  margin-top: 0;
+}
+
 .ledger-empty-row {
   text-align: center;
   color: var(--ink-faint);
@@ -1548,6 +1556,28 @@ textarea {
   margin-bottom: 8px;
 }
 
+.fiscal-close-confirm-form input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--rule-strong);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 13px;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.fiscal-close-confirm-form input::placeholder {
+  color: var(--ink-faint);
+}
+
+.fiscal-close-confirm-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 .fiscal-close-warning {
   display: flex;
   align-items: flex-start;
@@ -1951,4 +1981,151 @@ textarea {
 .archive-browser-bbd-badge {
   background: var(--receive-soft);
   color: var(--receive);
+}
+/* ---------------------------------------------------------------------- */
+/* Admin section (password lock, tabs, recycle bin)                       */
+/* ---------------------------------------------------------------------- */
+
+.admin-lock-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 40px;
+}
+
+.admin-lock-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 340px;
+  padding: 32px 28px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  text-align: center;
+}
+
+.admin-lock-icon {
+  color: var(--ink-muted);
+  margin-bottom: 4px;
+}
+
+.admin-lock-panel h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.admin-lock-panel input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  margin-top: 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--rule-strong);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 13.5px;
+  text-align: center;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.admin-lock-panel input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.admin-lock-panel .btn-primary {
+  width: 100%;
+  margin-top: 4px;
+  justify-content: center;
+}
+
+.admin-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--rule);
+  margin: 4px 0 16px;
+}
+
+.admin-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 16px;
+  border: none;
+  background: none;
+  color: var(--ink-muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.admin-tab:hover {
+  color: var(--ink);
+}
+
+.admin-tab.active {
+  color: var(--accent-hover);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.admin-section-heading {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin: 20px 0 8px;
+}
+
+.recycle-bin-row-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.recycle-bin-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.recycle-bin-section-header .admin-section-heading {
+  margin: 0;
+}
+
+.recycle-bin-bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.recycle-bin-selected-count {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  font-weight: 500;
+}
+
+.recycle-bin-checkbox-col {
+  width: 36px;
+  text-align: center;
+}
+
+.recycle-bin-checkbox-col input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+  accent-color: var(--accent);
 }

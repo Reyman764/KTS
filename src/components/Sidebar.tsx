@@ -29,10 +29,6 @@ export default function Sidebar({
   const [editingMaterial, setEditingMaterial] = useState<RawMaterial | null>(null);
   const [deletingMaterial, setDeletingMaterial] = useState<RawMaterial | null>(null);
 
-  useEffect(() => {
-    loadRawMaterials();
-  }, [refreshKey]);
-
   async function loadRawMaterials() {
     setLoading(true);
     try {
@@ -44,6 +40,10 @@ export default function Sidebar({
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    loadRawMaterials();
+  }, [refreshKey]);
 
   function handleCreated(newMaterial: RawMaterial) {
     setRawMaterials((prev) =>
@@ -441,6 +441,7 @@ function DeleteRawMaterialModal({ rawMaterial, onClose, onDeleted }: DeleteRawMa
   const [loadingImpact, setLoadingImpact] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmText, setConfirmText] = useState('');
 
   useEffect(() => {
     rawMaterialsApi
@@ -458,7 +459,10 @@ function DeleteRawMaterialModal({ rawMaterial, onClose, onDeleted }: DeleteRawMa
       .finally(() => setLoadingImpact(false));
   }, [rawMaterial.id]);
 
+  const isConfirmed = confirmText.trim() === rawMaterial.name;
+
   async function handleConfirm() {
+    if (!isConfirmed) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -489,6 +493,21 @@ function DeleteRawMaterialModal({ rawMaterial, onClose, onDeleted }: DeleteRawMa
             . This can't be undone.
           </p>
         )}
+        {!loadingImpact && impact && (
+          <div className="delete-confirm-type">
+            <label className="field-label" htmlFor="rm-delete-confirm">
+              Type <strong>{rawMaterial.name}</strong> to confirm
+            </label>
+            <input
+              id="rm-delete-confirm"
+              type="text"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              autoFocus
+              autoComplete="off"
+            />
+          </div>
+        )}
         {error && <p className="field-error">{error}</p>}
         <div className="modal-actions">
           <button type="button" className="btn-secondary" onClick={onClose}>
@@ -498,7 +517,7 @@ function DeleteRawMaterialModal({ rawMaterial, onClose, onDeleted }: DeleteRawMa
             type="button"
             className="btn-danger"
             onClick={handleConfirm}
-            disabled={submitting || loadingImpact}
+            disabled={submitting || loadingImpact || !isConfirmed}
           >
             {submitting ? 'Deleting…' : 'Delete raw material'}
           </button>

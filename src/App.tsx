@@ -1,15 +1,16 @@
 import { useState } from 'react';
-import { Boxes, BarChart3, Users } from 'lucide-react';
+import { Boxes, BarChart3, Users, Lock } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import CodeSubNav from './components/CodeSubNav';
 import LedgerTabs, { type LedgerView } from './components/LedgerTabs';
 import Ledger from './components/Ledger';
 import Reports from './components/Reports';
 import BuyerReport from './components/BuyerReport';
+import Admin from './components/Admin';
 import type { MaterialCode, RawMaterial } from './types';
 import './App.css';
 
-type Page = 'INVENTORY' | 'REPORTS' | 'BUYER_REPORT';
+type Page = 'INVENTORY' | 'REPORTS' | 'BUYER_REPORT' | 'ADMIN';
 
 function App() {
   const [page, setPage] = useState<Page>('INVENTORY');
@@ -69,6 +70,15 @@ function App() {
         >
           <Users size={20} />
           <span>Buyers</span>
+        </button>
+        <button
+          type="button"
+          className={`nav-rail-item ${page === 'ADMIN' ? 'active' : ''}`}
+          onClick={() => setPage('ADMIN')}
+          title="Admin"
+        >
+          <Lock size={20} />
+          <span>Admin</span>
         </button>
       </nav>
 
@@ -138,6 +148,20 @@ function App() {
           </div>
         </div>
       </div>
+
+      {/* Admin is intentionally NOT kept mounted like the other pages above —
+          it unmounts on navigating away so the password lock resets every
+          time you leave the section, instead of staying unlocked for the
+          rest of the app session. */}
+      {page === 'ADMIN' && (
+        <div className="page-panel page-panel-active">
+          <div className="main-panel">
+            <div className="ledger-content">
+              <Admin />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

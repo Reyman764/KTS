@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { FileSpreadsheet, FileText, CalendarClock, Archive } from 'lucide-react';
+import { FileSpreadsheet, FileText, CalendarClock, Archive, Save, Upload } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import type { EntityType, MaterialCode, RawMaterial, ReportResult, Transaction } from '../types';
 import { rawMaterialsApi } from '../api/rawMaterials';
@@ -7,6 +7,7 @@ import { materialCodesApi } from '../api/materialCodes';
 import { reportsApi } from '../api/reports';
 import FiscalYearClose from './FiscalYearClose';
 import ArchiveBrowser from './ArchiveBrowser';
+import BackupRestore from './BackupRestore';
 
 const PAGE_SIZE = 200;
 const COLUMN_COUNT = 13;
@@ -27,6 +28,7 @@ export default function Reports() {
   const [error, setError] = useState<string | null>(null);
   const [fiscalCloseOpen, setFiscalCloseOpen] = useState(false);
   const [archiveBrowserOpen, setArchiveBrowserOpen] = useState(false);
+  const [backupModal, setBackupModal] = useState<'BACKUP' | 'RESTORE' | null>(null);
 
   const selectedRawMaterial = rawMaterials.find((rm) => rm.id === selectedRawMaterialId) ?? null;
   const selectedCode = codes.find((c) => c.id === selectedCodeId) ?? null;
@@ -205,6 +207,20 @@ export default function Reports() {
           </button>
           <button
             type="button"
+            className="btn-secondary"
+            onClick={() => setBackupModal('BACKUP')}
+          >
+            <Save size={14} /> Backup Now
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => setBackupModal('RESTORE')}
+          >
+            <Upload size={14} /> Restore Backup
+          </button>
+          <button
+            type="button"
             className="btn-secondary fiscal-close-trigger"
             onClick={() => setFiscalCloseOpen(true)}
           >
@@ -370,6 +386,9 @@ export default function Reports() {
 
       {fiscalCloseOpen && <FiscalYearClose onClose={() => setFiscalCloseOpen(false)} />}
       {archiveBrowserOpen && <ArchiveBrowser onClose={() => setArchiveBrowserOpen(false)} />}
+      {backupModal && (
+        <BackupRestore mode={backupModal} onClose={() => setBackupModal(null)} />
+      )}
     </div>
   );
 }

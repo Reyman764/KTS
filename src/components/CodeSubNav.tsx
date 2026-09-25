@@ -38,15 +38,6 @@ export default function CodeSubNav({
   const [editingCode, setEditingCode] = useState<MaterialCode | null>(null);
   const [deletingCode, setDeletingCode] = useState<MaterialCode | null>(null);
 
-  useEffect(() => {
-    setFilter('');
-    if (rawMaterial) {
-      loadCodes(rawMaterial.id);
-    } else {
-      setCodes([]);
-    }
-  }, [rawMaterial]);
-
   async function loadCodes(rawMaterialId: number) {
     setLoading(true);
     try {
@@ -60,6 +51,16 @@ export default function CodeSubNav({
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    setFilter('');
+    if (rawMaterial) {
+      loadCodes(rawMaterial.id);
+    } else {
+      setCodes([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawMaterial]);
 
   function handleCreated(newCode: MaterialCode) {
     setCodes((prev) =>
@@ -543,6 +544,7 @@ function DeleteCodeModal({ code, onClose, onDeleted }: DeleteCodeModalProps) {
   const [loadingImpact, setLoadingImpact] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmText, setConfirmText] = useState('');
 
   useEffect(() => {
     materialCodesApi
@@ -555,7 +557,10 @@ function DeleteCodeModal({ code, onClose, onDeleted }: DeleteCodeModalProps) {
       .finally(() => setLoadingImpact(false));
   }, [code.id]);
 
+  const isConfirmed = confirmText.trim() === code.code;
+
   async function handleConfirm() {
+    if (!isConfirmed) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -583,6 +588,21 @@ function DeleteCodeModal({ code, onClose, onDeleted }: DeleteCodeModalProps) {
             . This can't be undone.
           </p>
         )}
+        {!loadingImpact && impact && (
+          <div className="delete-confirm-type">
+            <label className="field-label" htmlFor="code-delete-confirm">
+              Type <strong>{code.code}</strong> to confirm
+            </label>
+            <input
+              id="code-delete-confirm"
+              type="text"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              autoFocus
+              autoComplete="off"
+            />
+          </div>
+        )}
         {error && <p className="field-error">{error}</p>}
         <div className="modal-actions">
           <button type="button" className="btn-secondary" onClick={onClose}>
@@ -592,7 +612,7 @@ function DeleteCodeModal({ code, onClose, onDeleted }: DeleteCodeModalProps) {
             type="button"
             className="btn-danger"
             onClick={handleConfirm}
-            disabled={submitting || loadingImpact}
+            disabled={submitting || loadingImpact || !isConfirmed}
           >
             {submitting ? 'Deleting…' : 'Delete color code'}
           </button>
