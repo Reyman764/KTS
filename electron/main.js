@@ -1905,18 +1905,14 @@ function createWindow() {
     },
   });
 
-  // Allow window.open() calls from the renderer (used by the Reports page's
-  // "Export PDF" button to open a printable view) to actually open a window,
-  // instead of being silently blocked by Electron's default same-window policy.
   win.webContents.setWindowOpenHandler(() => ({ action: 'allow' }));
 
-  if (process.env.NODE_ENV === 'development' || !app.isPackaged) {
+  if (!app.isPackaged) {
     win.loadURL('http://localhost:5173');
   } else {
-    win.loadFile(path.resolve(__dirname, '../dist/index.html'));
+    win.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 }
-
 app.whenReady().then(async () => {
   try {
     await initDb();
