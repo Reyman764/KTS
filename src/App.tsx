@@ -8,6 +8,7 @@ import Reports from './components/Reports';
 import BuyerReport from './components/BuyerReport';
 import Admin from './components/Admin';
 import type { MaterialCode, RawMaterial } from './types';
+import ktsLogo from './assets/kts-icon.png';
 import './App.css';
 
 type Page = 'INVENTORY' | 'REPORTS' | 'BUYER_REPORT' | 'ADMIN';
@@ -44,6 +45,9 @@ function App() {
   return (
     <div className="app-shell">
       <nav className="app-nav-rail">
+        <div className="app-nav-rail-logo" title="Kumbeshwar Technical School">
+          <img src={ktsLogo} alt="Kumbeshwar Technical School" />
+        </div>
         <button
           type="button"
           className={`nav-rail-item ${page === 'INVENTORY' ? 'active' : ''}`}

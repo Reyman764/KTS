@@ -1897,6 +1897,7 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
+    icon: path.join(__dirname, '../public/icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -1912,7 +1913,7 @@ function createWindow() {
   if (process.env.NODE_ENV === 'development' || !app.isPackaged) {
     win.loadURL('http://localhost:5173');
   } else {
-    win.loadFile(path.join(__dirname, '../dist/index.html'));
+    win.loadFile(path.resolve(__dirname, '../dist/index.html'));
   }
 }
 

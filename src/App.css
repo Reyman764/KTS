@@ -1219,6 +1219,22 @@
   gap: 6px;
 }
 
+.app-nav-rail-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 6px 14px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.app-nav-rail-logo img {
+  width: 100%;
+  max-width: 52px;
+  height: auto;
+  display: block;
+}
+
 .nav-rail-item {
   display: flex;
   flex-direction: column;
@@ -2009,14 +2025,24 @@ textarea {
   text-align: center;
 }
 
-.admin-lock-icon {
-  color: var(--ink-muted);
-  margin-bottom: 4px;
+.admin-lock-logo {
+  width: 64px;
+  height: auto;
+  margin-bottom: 6px;
 }
 
 .admin-lock-panel h2 {
   margin: 0;
   font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.admin-lock-title-icon {
+  color: var(--ink-muted);
+  flex-shrink: 0;
 }
 
 .admin-lock-panel input {

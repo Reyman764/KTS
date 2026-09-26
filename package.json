@@ -1,13 +1,45 @@
 {
   "name": "kts-wool-inventory",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Wool stock inventory system for Kumbeshwar Technical School",
+  "author": "Kumbeshwar Technical School",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
     "dev": "concurrently \"vite\" \"electron .\"",
     "build": "tsc && vite build",
-    "rebuild": "electron-rebuild -f -w sqlite3"
+    "rebuild": "electron-rebuild -f -w sqlite3",
+    "postinstall": "electron-rebuild -f -w sqlite3",
+    "dist": "npm run build && electron-builder --win"
+  },
+ "build": {
+    "appId": "com.kts.wool-inventory",
+    "productName": "KTS Wool Inventory",
+    "directories": {
+      "output": "release"
+    },
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "public/**/*",
+      "package.json"
+    ],
+    "extraResources": [],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "KTS Wool Inventory"
+    }
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.10.9",

@@ -3,6 +3,7 @@ import { Lock, ShieldAlert, Trash2 } from 'lucide-react';
 import { adminApi } from '../api/admin';
 import RecycleBin from './RecycleBin';
 import DeletionLog from './DeletionLog';
+import ktsLogo from '../assets/kts-icon.png';
 
 type AdminTab = 'RECYCLE_BIN' | 'DELETION_LOG';
 
@@ -42,8 +43,10 @@ export default function Admin() {
     return (
       <div className="admin-lock-screen">
         <form className="admin-lock-panel" onSubmit={handleUnlock}>
-          <Lock size={28} className="admin-lock-icon" />
-          <h2>Admin Section</h2>
+          <img src={ktsLogo} alt="Kumbeshwar Technical School" className="admin-lock-logo" />
+          <h2>
+            <Lock size={16} className="admin-lock-title-icon" /> Admin Section
+          </h2>
           <p className="delete-confirm-text">
             Enter the admin password to access the recycle bin and deletion log.
           </p>
